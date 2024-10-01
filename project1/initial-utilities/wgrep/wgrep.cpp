@@ -66,6 +66,15 @@ int grep(int file_descriptor, char *search_str) {
     return 1;
   }
 
+  // Handle if last line doesn't end in \n
+  if (r_buf[read_bytes - 1] != '\n' && search_i == search_str_len) {
+    int write_res = write(STDOUT_FILENO, line.c_str(), line.length());
+    if (write_res == -1) {
+      write(STDOUT_FILENO, "wgrep: invalid write operation\n", 31);
+      return 1;
+    }
+  }
+
   return 0;
 }
 
