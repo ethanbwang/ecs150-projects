@@ -10,10 +10,10 @@
 
 // Helper function to get length of string
 int len(const char *str) {
-  int len = 0;
+  int str_len = 0;
   while (*str++)
-    len++;
-  return len;
+    str_len++;
+  return str_len;
 }
 
 // Buffers and searches for search string in file
@@ -27,17 +27,17 @@ int grep(int file_descriptor, char *search_str) {
    * 3. Else, reset search_i
    * 4. Add char to line for printing
    */
-  int ret;
-  char buffer[4096];
+  int read_bytes;
+  char r_buf[4096];
   std::string line;
   int search_i = 0;
   int search_str_len = len(search_str);
 
-  while ((ret = read(file_descriptor, buffer, sizeof(buffer))) > 0) {
-    for (int i = 0; i < ret; i++) {
-      if (buffer[i] == '\n') {
+  while ((read_bytes = read(file_descriptor, r_buf, sizeof(r_buf))) > 0) {
+    for (int i = 0; i < read_bytes; i++) {
+      if (r_buf[i] == '\n') {
         if (search_i == search_str_len) {
-          line += buffer[i];
+          line += r_buf[i];
           int write_res = write(STDOUT_FILENO, line.c_str(), line.length());
           if (write_res == -1) {
             write(STDOUT_FILENO, "wgrep: invalid write operation\n", 31);
@@ -48,12 +48,12 @@ int grep(int file_descriptor, char *search_str) {
         line.clear();
       } else {
         if (search_i != search_str_len) {
-          if (buffer[i] == search_str[search_i])
+          if (r_buf[i] == search_str[search_i])
             search_i++;
           else
             search_i = 0;
         }
-        line += buffer[i];
+        line += r_buf[i];
       }
     }
   }
@@ -61,7 +61,7 @@ int grep(int file_descriptor, char *search_str) {
   if (file_descriptor != STDIN_FILENO)
     close(file_descriptor);
 
-  if (ret == -1) {
+  if (read_bytes == -1) {
     write(STDOUT_FILENO, "wgrep: invalid read operation\n", 31);
     return 1;
   }
