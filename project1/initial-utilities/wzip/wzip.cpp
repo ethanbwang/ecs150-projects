@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -18,11 +19,13 @@ int main(int argc, char *argv[]) {
   } else {
     // Loop through each file name provided
     int file_descriptor;
-    int ret;
-    char buffer[4096];
+    int read_bytes;
+    char r_buf[4096];
     char cur_char = '\0';
     uint32_t occurs = 0;
-    std::vector<char> w_buffer{};
+    char occurs_bin[4];
+    std::vector<char> w_buf{};
+
     for (int i = 1; i < argc; i++) {
       file_descriptor = open(argv[i], O_RDONLY);
       if (file_descriptor == -1) {
@@ -31,18 +34,18 @@ int main(int argc, char *argv[]) {
       }
 
       // Run-length encoding algorithm
-      while ((ret = read(file_descriptor, buffer, sizeof(buffer))) > 0) {
+      while ((read_bytes = read(file_descriptor, r_buf, sizeof(r_buf))) > 0) {
         // Set cur_char to the first char in the buffer
         // Only run on the first read call
         if (cur_char == '\0') {
-          cur_char = buffer[0];
+          cur_char = r_buf[0];
         }
-        for (int i = 0; i < ret; i++) {
-          if (cur_char != buffer[i]) {
-            char *occurs_str = (char *)&occurs;
-            w_buffer.insert(w_buffer.end(), occurs_str, occurs_str + 4);
-            w_buffer.push_back(cur_char);
-            cur_char = buffer[i];
+        for (int i = 0; i < read_bytes; i++) {
+          if (cur_char != r_buf[i]) {
+            std::memcpy(&occurs_bin, &occurs, sizeof(occurs));
+            w_buf.insert(w_buf.end(), occurs_bin, occurs_bin + 4);
+            w_buf.push_back(cur_char);
+            cur_char = r_buf[i];
             occurs = 1;
           } else {
             occurs++;
@@ -53,15 +56,17 @@ int main(int argc, char *argv[]) {
       if (file_descriptor != STDIN_FILENO)
         close(file_descriptor);
 
-      if (ret == -1) {
+      if (read_bytes == -1) {
         write(STDOUT_FILENO, "wzip: invalid read operation\n", 30);
         return 1;
       }
     }
-    char *occurs_str = (char *)&occurs;
-    w_buffer.insert(w_buffer.end(), occurs_str, occurs_str + 4);
-    w_buffer.push_back(cur_char);
-    int written = write(STDOUT_FILENO, w_buffer.data(), w_buffer.size());
+
+    std::memcpy(&occurs_bin, &occurs, sizeof(occurs));
+    w_buf.insert(w_buf.end(), occurs_bin, occurs_bin + 4);
+    w_buf.push_back(cur_char);
+
+    int written = write(STDOUT_FILENO, w_buf.data(), w_buf.size());
     if (written == -1) {
       write(STDOUT_FILENO, "wzip: invalid write operation\n", 31);
       return 1;

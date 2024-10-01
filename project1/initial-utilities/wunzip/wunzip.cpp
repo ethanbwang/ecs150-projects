@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -18,11 +19,11 @@ int main(int argc, char *argv[]) {
   } else {
     // Loop through each file name provided
     int file_descriptor;
-    int ret;
-    char buffer[4095];
-    char cur_char;
-    uint32_t *occurs;
-    std::vector<char> w_buffer{};
+    int read_bytes;
+    char r_buf[4095];
+    uint32_t occurs;
+    std::vector<char> w_buf{};
+
     for (int i = 1; i < argc; i++) {
       file_descriptor = open(argv[i], O_RDONLY);
       if (file_descriptor == -1) {
@@ -31,27 +32,25 @@ int main(int argc, char *argv[]) {
       }
 
       // Run-length decoding algorithm
-      while ((ret = read(file_descriptor, buffer, sizeof(buffer))) > 0) {
-        for (int i = 0; i < ret; i += 5) {
+      while ((read_bytes = read(file_descriptor, r_buf, sizeof(r_buf))) > 0) {
+        for (int i = 0; i < read_bytes; i += 5) {
           // Assumes little-endianness
           // Reuse section of buffer as the four-byte integer
-          occurs = (uint32_t *)&buffer[i];
-          cur_char = buffer[i + 4];
-          for (uint32_t j = 0; j < *occurs; j++) {
-            w_buffer.push_back(cur_char);
-          }
+          std::memcpy(&occurs, &r_buf[i], sizeof(occurs));
+          w_buf.insert(w_buf.end(), occurs, r_buf[i + 4]);
         }
       }
 
       if (file_descriptor != STDIN_FILENO)
         close(file_descriptor);
 
-      if (ret == -1) {
+      if (read_bytes == -1) {
         write(STDOUT_FILENO, "wunzip: invalid read operation\n", 32);
         return 1;
       }
     }
-    int written = write(STDOUT_FILENO, w_buffer.data(), w_buffer.size());
+
+    int written = write(STDOUT_FILENO, w_buf.data(), w_buf.size());
     if (written == -1) {
       write(STDOUT_FILENO, "wunzip: invalid write operation\n", 33);
       return 1;
