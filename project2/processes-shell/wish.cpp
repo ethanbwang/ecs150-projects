@@ -1,5 +1,4 @@
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -17,7 +16,6 @@
 class Wish {
 private:
   std::vector<std::string> paths = {"/bin"};
-  std::vector<std::string> batch_scripts = {};
   std::string input = "";
   // Each command is a vector of args
   // Multiple commands will be due to an ampersand
@@ -29,12 +27,6 @@ private:
 
 public:
   Wish() {}
-
-  Wish(const int &argc, char **argv) {
-    for (int i = 0; i < argc; i++) {
-      batch_scripts.push_back(argv[i]);
-    }
-  }
 
   int path(const std::vector<char *> &command) {
     /*
@@ -277,7 +269,7 @@ public:
   }
 
   int run_stdin() {
-    // Runs wish from stdin
+    // Runs wish taking input from stdin
     while (true) {
       input.clear();
       std::cout << "wish> ";
@@ -288,7 +280,7 @@ public:
   }
 
   int run_batch(char *file) {
-    // Runs the wish shell with batch scripts
+    // Runs the wish shell with specified batch script
     std::ifstream ifs(file, std::ios::in);
     if (!ifs) {
       std::cerr << error_message;
@@ -307,13 +299,11 @@ public:
 };
 
 int main(int argc, char *argv[]) {
-  Wish wish;
+  Wish wish = Wish();
   switch (argc) {
   case 2:
-    wish = Wish(argc, argv);
     return wish.run_batch(argv[1]);
   case 1:
-    wish = Wish();
     return wish.run_stdin();
   default:
     std::cerr << "An error has occurred\n";
