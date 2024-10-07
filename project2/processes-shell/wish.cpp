@@ -123,13 +123,26 @@ public:
         }
         break;
       case '&':
-        if (ampersand) {
+        if ((args.size() == 0 && commands.size() == 0) || ampersand) {
+          // Nothing before the ampersand or ampersand right after another
+          // ampersand
           std::cerr << error_message;
           return 1;
         }
         ampersand = true;
         // Run the previous command in a child process
         // No problem if nothing comes after an ampersand
+        if (!cur_str.empty()) {
+          // Last argument hasn't been added yet
+          add_arg(cur_str, args, arg_mem);
+          cur_str.clear();
+        }
+        // TODO: Have to handle redirect
+        args.push_back(nullptr);
+        commands.push_back(args);
+        command_mem.push_back(std::move(arg_mem));
+        args.clear();
+        arg_mem.clear();
         break;
       case '<':
         // Expect one file. Anything after the filename is an error.
@@ -147,7 +160,13 @@ public:
         }
         redirect = 1;
         break;
+      case '|':
+        break;
       default:
+        if (ampersand) {
+          // Confirmed that there isn't two ampersands in a row
+          ampersand = false;
+        }
         cur_str += c;
       }
     }
