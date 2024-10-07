@@ -1,10 +1,8 @@
-#include <cassert>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
-#include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -26,8 +24,7 @@ private:
   std::vector<std::vector<std::unique_ptr<char[]>>> command_mem = {};
   std::vector<std::vector<char *>> commands = {};
   std::string redir_file = "";
-  char error_message[23] = "An error has occurred\n";
-  int err_msg_len = strlen(error_message);
+  std::string error_message = "An error has occurred\n";
   std::vector<pid_t> pid_list = {};
 
 public:
@@ -68,13 +65,13 @@ public:
      */
     if (command.size() != 3 || strcmp(command[0], "cd") ||
         command[2] != nullptr) {
-      write(STDERR_FILENO, error_message, err_msg_len);
+      std::cerr << error_message;
       // std::cout << "wish: cd: error: invalid number of arguments\n";
       return 1;
     }
 
     if (chdir(command[1])) {
-      write(STDERR_FILENO, error_message, err_msg_len);
+      std::cerr << error_message;
       // std::cout << "wish: cd: error: invalid directory\n";
       return 1;
     }
@@ -102,7 +99,7 @@ public:
     std::string cur_str = "";
     std::vector<std::unique_ptr<char[]>> arg_mem = {};
     std::vector<char *> args = {};
-    std::set<char> delims = {'&', '<', '>', '|', ' '};
+    // std::set<char> delims = {'&', '<', '>', '|', ' '};
     int redirect = 0;
     bool ampersand = false;
     for (auto c : input) {
@@ -135,7 +132,7 @@ public:
         break;
       case '&':
         if (ampersand) {
-          write(STDOUT_FILENO, error_message, err_msg_len);
+          std::cerr << error_message;
           return 1;
         }
         ampersand = true;
@@ -145,7 +142,7 @@ public:
       case '<':
         // Expect one file. Anything after the filename is an error.
         if (ampersand || redirect) {
-          write(STDOUT_FILENO, error_message, err_msg_len);
+          std::cerr << error_message;
           return 1;
         }
         redirect = 2;
@@ -153,7 +150,7 @@ public:
       case '>':
         // Expect one file. Anything after the filename is an error.
         if (ampersand || redirect) {
-          write(STDOUT_FILENO, error_message, err_msg_len);
+          std::cerr << error_message;
           return 1;
         }
         redirect = 1;
@@ -162,6 +159,8 @@ public:
         cur_str += c;
       }
     }
+    // If redirect, should add cur string to redir_file and not add anything to
+    // commands
     if (!cur_str.empty()) {
       // Last argument hasn't been added yet
       add_arg(cur_str, args, arg_mem);
@@ -189,109 +188,135 @@ public:
       exec_path = path + '/' + command[0];
       if (access(exec_path.c_str(), X_OK) == 0) {
         if (execv(exec_path.c_str(), command.data()) == -1) {
-          write(STDOUT_FILENO, error_message, err_msg_len);
+          std::cerr << error_message;
           return 1;
         }
         return 0;
       }
     }
-    write(STDOUT_FILENO, error_message, err_msg_len);
+    std::cerr << error_message;
     return 1;
   }
 
   int run() {
-    // Runs the wish shell
-    int good_command = 1;
-    while (true) {
-      input.clear();
-      commands.clear();
-      redir_file.clear();
-      pid_list.clear();
+    // Parses a command and allocates the processes to run them
+    commands.clear();
+    redir_file.clear();
+    pid_list.clear();
 
-      std::cout << "wish> ";
-      std::getline(std::cin, input);
-      if (input.length() == 0) {
-        continue;
+    if (input.length() == 0) {
+      return 0;
+    }
+
+    if (parse_command() == 0) {
+      for (size_t i = 0; i < commands.size() - 1; i++) {
+        // Need to fork
+        // When to fork?
+        // - When there are multiple commands (meaning parallel commands)
+        // - If the command is not a built-in shell command
+        pid_t pid = fork();
+        if (pid == -1) {
+          std::cerr << error_message;
+          continue;
+        }
+
+        if (pid == 0) {
+          // Execute command in child process
+          if (strcmp(commands[i][0], "exit") == 0) {
+            if (commands[i].size() != 2) {
+              std::cerr << error_message;
+            } else {
+              exit(0);
+            }
+          } else if (strcmp(commands[i][0], "cd") == 0) {
+            exit(cd(commands[i]));
+          } else if (strcmp(commands[i][0], "path") == 0) {
+            exit(path(commands[i]));
+          } else {
+            // std::cout << "wish: invalid command: " << pair.first << '\n';
+            exit(exec_command(commands[i]));
+          }
+        } else {
+          pid_list.push_back(pid);
+        }
       }
-
-      good_command = parse_command();
-      if (good_command == 0) {
-        for (size_t i = 0; i < commands.size() - 1; i++) {
-          // Need to fork
-          // When to fork?
-          // - When there are multiple commands (meaning parallel commands)
-          // - If the command is not a built-in shell command
+      // Last command is treated differently, should not be a parallel process
+      size_t last_idx = commands.size() - 1;
+      if (last_idx >= 0 && commands[last_idx][0] != nullptr) {
+        if (strcmp(commands[last_idx][0], "exit") == 0) {
+          if (commands[last_idx].size() != 2) {
+            std::cerr << error_message;
+          } else {
+            exit(0);
+          }
+          exit(0);
+        } else if (strcmp(commands[last_idx][0], "cd") == 0) {
+          cd(commands[last_idx]);
+        } else if (strcmp(commands[last_idx][0], "path") == 0) {
+          path(commands[last_idx]);
+        } else {
+          // Fork since it is not a built-in command
           pid_t pid = fork();
           if (pid == -1) {
-            write(STDERR_FILENO, error_message, err_msg_len);
-            continue;
-          }
-
-          if (pid == 0) {
-            // Execute command in child process
-            if (strcmp(commands[i][0], "exit") == 0) {
-              assert(commands[i].size() == 2);
-              exit(5);
-            } else if (strcmp(commands[i][0], "cd") == 0) {
-              cd(commands[i]);
-            } else if (strcmp(commands[i][0], "path") == 0) {
-              path(commands[i]);
-            } else {
-              // std::cout << "wish: invalid command: " << pair.first << '\n';
-              exec_command(commands[i]);
-            }
+            std::cerr << error_message;
+          } else if (pid == 0) {
+            exit(exec_command(commands[last_idx]));
           } else {
             pid_list.push_back(pid);
           }
         }
-        // Last command is treated differently, should not be a parallel process
-        size_t last_idx = commands.size() - 1;
-        if (last_idx >= 0 && commands[last_idx][0] != nullptr) {
-          if (strcmp(commands[last_idx][0], "exit") == 0) {
-            assert(commands[last_idx].size() == 2);
-            exit(5);
-          } else if (strcmp(commands[last_idx][0], "cd") == 0) {
-            cd(commands[last_idx]);
-          } else if (strcmp(commands[last_idx][0], "path") == 0) {
-            path(commands[last_idx]);
-          } else {
-            // Fork since it is not a built-in command
-            pid_t pid = fork();
-            if (pid == -1) {
-              write(STDERR_FILENO, error_message, err_msg_len);
-            } else if (pid == 0) {
-              exec_command(commands[last_idx]);
-            } else {
-              pid_list.push_back(pid);
-            }
-          }
-        }
-
-        for (auto pid : pid_list) {
-          int child_stat;
-          waitpid(pid, &child_stat, 0);
-        }
       }
+
+      for (auto pid : pid_list) {
+        int child_stat;
+        waitpid(pid, &child_stat, 0);
+      }
+    }
+
+    return 0;
+  }
+
+  int run_stdin() {
+    // Runs wish from stdin
+    while (true) {
+      input.clear();
+      std::cout << "wish> ";
+      std::getline(std::cin, input);
+      run();
     }
     return 0;
   }
 
-  int run_batch() {
+  int run_batch(char *file) {
     // Runs the wish shell with batch scripts
+    std::ifstream ifs(file, std::ios::in);
+    if (!ifs) {
+      std::cerr << error_message;
+    }
+    while (std::getline(ifs, input)) {
+      // if (!run()) {
+      //   // std::cerr << error_message;
+      //   // return 1;
+      //   continue;
+      // }
+      run();
+    }
+    ifs.close();
     return 0;
   }
 };
 
 int main(int argc, char *argv[]) {
   Wish wish;
-  if (argc > 1) {
+  switch (argc) {
+  case 2:
     wish = Wish(argc, argv);
-    if (wish.run_batch()) {
-      return 1;
-    }
-    return wish.run();
-  } else {
+    return wish.run_batch(argv[1]);
+  case 1:
     wish = Wish();
-    return wish.run();
+    return wish.run_stdin();
+  default:
+    std::cerr << "An error has occurred\n";
+    exit(1);
   }
 }
