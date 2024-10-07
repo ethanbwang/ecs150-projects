@@ -124,7 +124,6 @@ public:
         args.push_back(nullptr);
         commands.push_back(args);
         command_mem.push_back(std::move(arg_mem));
-        cur_str.clear();
         return 0;
       case ' ':
       case '\t':
@@ -247,7 +246,7 @@ public:
         }
         // Last command is treated differently, should not be a parallel process
         size_t last_idx = commands.size() - 1;
-        if (last_idx >= 0) {
+        if (last_idx >= 0 && commands[last_idx][0] != nullptr) {
           if (strcmp(commands[last_idx][0], "exit") == 0) {
             assert(commands[last_idx].size() == 2);
             exit(5);
