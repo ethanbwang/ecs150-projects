@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -13,15 +14,176 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+class Command {
+private:
+  std::vector<char *> args = {};
+  std::vector<std::unique_ptr<char[]>> arg_mem = {};
+  bool parallel = false;
+  std::string redir_in_file = "";
+  std::string redir_out_file = "";
+
+public:
+  Command() {}
+
+  const std::vector<char *> &get_args() { return args; }
+
+  void add_arg(char *p) { args.push_back(p); }
+
+  void add_arg(const std::string &arg) {
+    auto arg_p = std::make_unique<char[]>(arg.length() + 1);
+    std::strcpy(arg_p.get(), arg.c_str());
+    args.push_back(arg_p.get());
+    arg_mem.push_back(std::move(arg_p));
+  }
+
+  const bool &get_parallel() { return parallel; }
+
+  void set_parallel() { parallel = true; }
+
+  const std::string &get_in_file() { return redir_in_file; }
+
+  void set_in_file(const std::string &in_f) { redir_in_file = in_f; }
+
+  const std::string &get_out_file() { return redir_out_file; }
+
+  void set_out_file(const std::string &out_f) { redir_out_file = out_f; }
+};
+
+class Tokenizer {
+private:
+  std::set<std::string> delimeters = {"&", "|", "<", ">"};
+
+public:
+  Tokenizer() {}
+
+  std::vector<std::string> tokenize(const std::string &line) {
+    /*
+     * Tokenizes a line of input. Will check for incorrect sequences of tokens.
+     *
+     * Args:
+     *   line: line to tokenize
+     *
+     * Returns:
+     *   tokens: vector of tokens or vector of empty string if error
+     */
+    if (line.empty()) {
+      // Return empty string
+      return {""};
+    }
+
+    std::vector<std::string> tokens = {};
+    bool one_file = false;
+    bool redir_out = false;
+    bool redir_in = false;
+
+    std::string cur_str = "";
+    for (size_t idx = 0; idx < line.length(); idx++) {
+      switch (line[idx]) {
+      case EOF:
+        if (!cur_str.empty()) {
+          if (one_file && delimeters.count(tokens[tokens.size() - 1]) == 0) {
+            // Multiple files after redirection
+            return {};
+          }
+          // One more token to add
+          tokens.push_back(cur_str);
+        }
+
+        if (delimeters.count(tokens[tokens.size() - 1]) &&
+            tokens[tokens.size() - 1] != "&") {
+          // Line ended with an illegal special delimeter
+          return {};
+        }
+
+        // Exit gracefully at EOF
+        tokens.push_back("eof_exit");
+        return tokens;
+      case ' ':
+      case '\t':
+        if (!cur_str.empty()) {
+          if (one_file && delimeters.count(tokens[tokens.size() - 1]) == 0) {
+            // Multiple files after redirection
+            return {};
+          }
+          tokens.push_back(cur_str);
+          cur_str.clear();
+        }
+        break;
+      case '|':
+      case '&':
+      case '<':
+      case '>':
+        if (cur_str.empty() &&
+            (tokens.empty() || delimeters.count(tokens[tokens.size() - 1]))) {
+          // if ((tokens.empty() && cur_str.empty()) ||
+          //     delimeters.count(tokens[tokens.size() - 1])) {
+          // Makes sure that command doesn't begin with a special delimeter
+          // and that there aren't two special delimeters in a row
+          return {};
+        }
+
+        if (line[idx] == '<') {
+          if (redir_in) {
+            // Multiple redirects in one command
+            return {};
+          }
+          one_file = true;
+          redir_in = true;
+        } else if (line[idx] == '>') {
+          if (redir_out) {
+            // Multiple redirects in one command
+            return {};
+          }
+          one_file = true;
+          redir_out = true;
+        } else {
+          one_file = false;
+          redir_out = false;
+          redir_in = false;
+        }
+
+        if (!cur_str.empty()) {
+          if (one_file &&
+              delimeters.count(std::string(1, line[idx - 1])) == 0) {
+            // Multiple files after redirection
+            return {};
+          }
+          tokens.push_back(cur_str);
+          cur_str.clear();
+        }
+        tokens.push_back(std::string(1, line[idx]));
+        break;
+      default:
+        cur_str += line[idx];
+      }
+    }
+
+    if (!cur_str.empty()) {
+      if (one_file && delimeters.count(tokens[tokens.size() - 1]) == 0) {
+        // Multiple files after redirection
+        return {};
+      }
+      // One more token to add
+      tokens.push_back(cur_str);
+    }
+
+    if (delimeters.count(tokens[tokens.size() - 1]) &&
+        tokens[tokens.size() - 1] != "&") {
+      // Line ended with an illegal special delimeter
+      return {};
+    }
+    return tokens;
+  }
+};
+
 class Wish {
 private:
+  Tokenizer tokenizer = Tokenizer();
   std::vector<std::string> paths = {"/bin"};
   std::string input = "";
   // Each command is a vector of args
   // Multiple commands will be due to an ampersand
-  std::vector<std::vector<std::unique_ptr<char[]>>> command_mem = {};
-  std::vector<std::vector<char *>> commands = {};
-  std::string redir_file = "";
+  std::vector<Command> commands = {};
   std::string error_message = "An error has occurred\n";
   std::vector<pid_t> pid_list = {};
 
@@ -70,14 +232,6 @@ public:
     return 0;
   }
 
-  void add_arg(const std::string &arg, std::vector<char *> &args,
-               std::vector<std::unique_ptr<char[]>> &arg_mem) {
-    auto arg_p = std::make_unique<char[]>(arg.length() + 1);
-    std::strcpy(arg_p.get(), arg.c_str());
-    args.push_back(arg_p.get());
-    arg_mem.push_back(std::move(arg_p));
-  }
-
   int parse_command() {
     /*
      * Parses command line input
@@ -88,98 +242,58 @@ public:
      * Returns:
      *   exit code: 0 on success, 1 on error
      */
-    std::string cur_str = "";
-    std::vector<std::unique_ptr<char[]>> arg_mem = {};
-    std::vector<char *> args = {};
-    // std::set<char> delims = {'&', '<', '>', '|', ' '};
-    int redirect = 0;
-    bool ampersand = false;
-    for (auto c : input) {
-      switch (c) {
-      case EOF:
-        if (!cur_str.empty()) {
-          // One more argument to add
-          add_arg(cur_str, args, arg_mem);
-        }
-        args.push_back(nullptr);
-        commands.push_back(args);
-        command_mem.push_back(std::move(arg_mem));
+    std::vector<std::string> tokens = tokenizer.tokenize(input);
+    Command cmd = Command();
+    bool redir_out = false;
+    bool redir_in = false;
+    if (tokens.empty()) {
+      return 1;
+    } else if (tokens.size() == 1 && tokens[0] == "") {
+      return 0;
+    }
 
-        // Add exit to exit gracefully
-        cur_str = "exit";
-        args.clear();
-        arg_mem.clear();
-        add_arg(cur_str, args, arg_mem);
-        args.push_back(nullptr);
-        commands.push_back(args);
-        command_mem.push_back(std::move(arg_mem));
+    for (auto token : tokens) {
+      if (token == "eof_exit") {
+        if (!cmd.get_args().empty()) {
+          cmd.add_arg(nullptr);
+          commands.push_back(std::move(cmd));
+          cmd = Command();
+        }
+        cmd.add_arg(std::string("exit"));
+        commands.push_back(std::move(cmd));
         return 0;
-      case ' ':
-      case '\t':
-        if (!cur_str.empty()) {
-          // Just finished parsing an argument
-          add_arg(cur_str, args, arg_mem);
-          cur_str.clear();
+      } else if (token == "&") {
+        cmd.set_parallel();
+        cmd.add_arg(nullptr);
+        commands.push_back(std::move(cmd));
+        cmd = Command();
+      } else if (token == ">") {
+        redir_out = true;
+      } else if (token == "<") {
+        // TODO: Implement redirect in
+        redir_in = true;
+        std::cerr << error_message;
+        return 1;
+      } else if (token == "|") {
+        // TODO: Implement piping
+        std::cerr << error_message;
+        return 1;
+      } else {
+        if (redir_out) {
+          cmd.set_out_file(token);
+        } else if (redir_in) {
+          cmd.set_in_file(token);
+        } else {
+          cmd.add_arg(token);
         }
-        break;
-      case '&':
-        if ((args.size() == 0 && commands.size() == 0) || ampersand) {
-          // Nothing before the ampersand or ampersand right after another
-          // ampersand
-          std::cerr << error_message;
-          return 1;
-        }
-        ampersand = true;
-        // Run the previous command in a child process
-        // No problem if nothing comes after an ampersand
-        if (!cur_str.empty()) {
-          // Last argument hasn't been added yet
-          add_arg(cur_str, args, arg_mem);
-          cur_str.clear();
-        }
-        // TODO: Have to handle redirect
-        args.push_back(nullptr);
-        commands.push_back(args);
-        command_mem.push_back(std::move(arg_mem));
-        args.clear();
-        arg_mem.clear();
-        break;
-      case '<':
-        // Expect one file. Anything after the filename is an error.
-        if (ampersand || redirect) {
-          std::cerr << error_message;
-          return 1;
-        }
-        redirect = 2;
-        break;
-      case '>':
-        // Expect one file. Anything after the filename is an error.
-        if (ampersand || redirect) {
-          std::cerr << error_message;
-          return 1;
-        }
-        redirect = 1;
-        break;
-      case '|':
-        break;
-      default:
-        if (ampersand) {
-          // Confirmed that there isn't two ampersands in a row
-          ampersand = false;
-        }
-        cur_str += c;
       }
     }
-    // If redirect, should add cur string to redir_file and not add anything to
-    // commands
-    if (!cur_str.empty()) {
-      // Last argument hasn't been added yet
-      add_arg(cur_str, args, arg_mem);
-      cur_str.clear();
+
+    if (!cmd.get_args().empty()) {
+      // Add last command
+      cmd.add_arg(nullptr);
+      commands.push_back(std::move(cmd));
     }
-    args.push_back(nullptr);
-    commands.push_back(args);
-    command_mem.push_back(std::move(arg_mem));
 
     return 0;
   }
@@ -212,7 +326,6 @@ public:
   int run() {
     // Parses a command and allocates the processes to run them
     commands.clear();
-    redir_file.clear();
     pid_list.clear();
 
     if (input.length() == 0) {
@@ -220,60 +333,58 @@ public:
     }
 
     if (parse_command() == 0) {
-      for (size_t i = 0; i < commands.size() - 1; i++) {
+      for (auto &cmd : commands) {
         // Need to fork
         // When to fork?
         // - When there are multiple commands (meaning parallel commands)
         // - If the command is not a built-in shell command
-        pid_t pid = fork();
-        if (pid == -1) {
-          std::cerr << error_message;
-          continue;
-        }
+        if (cmd.get_parallel()) {
+          pid_t pid = fork();
+          if (pid == -1) {
+            std::cerr << error_message;
+            continue;
+          }
 
-        if (pid == 0) {
-          // Execute command in child process
-          if (strcmp(commands[i][0], "exit") == 0) {
-            if (commands[i].size() != 2) {
+          if (pid == 0) {
+            // Execute command in child process
+            if (strcmp(cmd.get_args()[0], "exit") == 0) {
+              if (cmd.get_args().size() != 2) {
+                std::cerr << error_message;
+              } else {
+                exit(0);
+              }
+            } else if (strcmp(cmd.get_args()[0], "cd") == 0) {
+              exit(cd(cmd.get_args()));
+            } else if (strcmp(cmd.get_args()[0], "path") == 0) {
+              exit(path(cmd.get_args()));
+            } else {
+              exit(exec_command(cmd.get_args()));
+            }
+          } else {
+            pid_list.push_back(pid);
+          }
+        } else {
+          // Command is not supposed to be run in parallel
+          if (strcmp(cmd.get_args()[0], "exit") == 0) {
+            if (cmd.get_args().size() != 2) {
               std::cerr << error_message;
             } else {
               exit(0);
             }
-          } else if (strcmp(commands[i][0], "cd") == 0) {
-            exit(cd(commands[i]));
-          } else if (strcmp(commands[i][0], "path") == 0) {
-            exit(path(commands[i]));
+          } else if (strcmp(cmd.get_args()[0], "cd") == 0) {
+            cd(cmd.get_args());
+          } else if (strcmp(cmd.get_args()[0], "path") == 0) {
+            path(cmd.get_args());
           } else {
-            // std::cout << "wish: invalid command: " << pair.first << '\n';
-            exit(exec_command(commands[i]));
-          }
-        } else {
-          pid_list.push_back(pid);
-        }
-      }
-      // Last command is treated differently, should not be a parallel process
-      size_t last_idx = commands.size() - 1;
-      if (last_idx >= 0 && commands[last_idx][0] != nullptr) {
-        if (strcmp(commands[last_idx][0], "exit") == 0) {
-          if (commands[last_idx].size() != 2) {
-            std::cerr << error_message;
-          } else {
-            exit(0);
-          }
-          exit(0);
-        } else if (strcmp(commands[last_idx][0], "cd") == 0) {
-          cd(commands[last_idx]);
-        } else if (strcmp(commands[last_idx][0], "path") == 0) {
-          path(commands[last_idx]);
-        } else {
-          // Fork since it is not a built-in command
-          pid_t pid = fork();
-          if (pid == -1) {
-            std::cerr << error_message;
-          } else if (pid == 0) {
-            exit(exec_command(commands[last_idx]));
-          } else {
-            pid_list.push_back(pid);
+            // Fork since it is not a built-in command
+            pid_t pid = fork();
+            if (pid == -1) {
+              std::cerr << error_message;
+            } else if (pid == 0) {
+              exit(exec_command(cmd.get_args()));
+            } else {
+              pid_list.push_back(pid);
+            }
           }
         }
       }
