@@ -67,7 +67,7 @@ public:
      *   tokens: vector of tokens or vector of empty string if error
      */
     if (line.empty()) {
-      // Return empty string
+      // Empty lines are allowed
       return {""};
     }
 
@@ -81,7 +81,8 @@ public:
       switch (line[idx]) {
       case EOF:
         if (!cur_str.empty()) {
-          if (one_file && delimeters.count(tokens[tokens.size() - 1]) == 0) {
+          if (one_file && tokens.size() > 0 &&
+              delimeters.count(tokens[tokens.size() - 1]) == 0) {
             // Multiple files after redirection
             return {};
           }
@@ -89,7 +90,7 @@ public:
           tokens.push_back(cur_str);
         }
 
-        if (delimeters.count(tokens[tokens.size() - 1]) &&
+        if (tokens.size() > 0 && delimeters.count(tokens[tokens.size() - 1]) &&
             tokens[tokens.size() - 1] != "&") {
           // Line ended with an illegal special delimeter
           return {};
@@ -101,7 +102,8 @@ public:
       case ' ':
       case '\t':
         if (!cur_str.empty()) {
-          if (one_file && delimeters.count(tokens[tokens.size() - 1]) == 0) {
+          if (one_file && tokens.size() > 0 &&
+              delimeters.count(tokens[tokens.size() - 1]) == 0) {
             // Multiple files after redirection
             return {};
           }
@@ -113,13 +115,27 @@ public:
       case '&':
       case '<':
       case '>':
-        if (cur_str.empty() &&
-            (tokens.empty() || delimeters.count(tokens[tokens.size() - 1]))) {
-          // if ((tokens.empty() && cur_str.empty()) ||
-          //     delimeters.count(tokens[tokens.size() - 1])) {
+        if (cur_str.empty() && tokens.empty() && line[idx] == '&') {
+          // Allow ampersand by itself for some reason
+          tokens.push_back(std::string(1, line[idx]));
+          break;
+        } else if (cur_str.empty() &&
+                   (tokens.empty() ||
+                    delimeters.count(tokens[tokens.size() - 1]))) {
           // Makes sure that command doesn't begin with a special delimeter
           // and that there aren't two special delimeters in a row
           return {};
+        }
+
+        if (!cur_str.empty()) {
+          if (one_file && tokens.size() > 0 &&
+              delimeters.count(tokens[tokens.size() - 1]) == 0) {
+            // Multiple files after redirection
+            return {};
+          }
+          // Just finished parsing cur_str as a token
+          tokens.push_back(cur_str);
+          cur_str.clear();
         }
 
         if (line[idx] == '<') {
@@ -142,15 +158,6 @@ public:
           redir_in = false;
         }
 
-        if (!cur_str.empty()) {
-          if (one_file &&
-              delimeters.count(std::string(1, line[idx - 1])) == 0) {
-            // Multiple files after redirection
-            return {};
-          }
-          tokens.push_back(cur_str);
-          cur_str.clear();
-        }
         tokens.push_back(std::string(1, line[idx]));
         break;
       default:
@@ -159,7 +166,8 @@ public:
     }
 
     if (!cur_str.empty()) {
-      if (one_file && delimeters.count(tokens[tokens.size() - 1]) == 0) {
+      if (one_file && tokens.size() > 0 &&
+          delimeters.count(tokens[tokens.size() - 1]) == 0) {
         // Multiple files after redirection
         return {};
       }
@@ -167,10 +175,13 @@ public:
       tokens.push_back(cur_str);
     }
 
-    if (delimeters.count(tokens[tokens.size() - 1]) &&
+    if (tokens.size() > 0 && delimeters.count(tokens[tokens.size() - 1]) &&
         tokens[tokens.size() - 1] != "&") {
       // Line ended with an illegal special delimeter
       return {};
+    } else if (tokens.empty() && cur_str.empty()) {
+      // Empty line
+      return {""};
     }
     return tokens;
   }
@@ -243,14 +254,15 @@ public:
      *   exit code: 0 on success, 1 on error
      */
     std::vector<std::string> tokens = tokenizer.tokenize(input);
-    Command cmd = Command();
-    bool redir_out = false;
-    bool redir_in = false;
     if (tokens.empty()) {
+      std::cerr << error_message;
       return 1;
     } else if (tokens.size() == 1 && tokens[0] == "") {
       return 0;
     }
+    Command cmd = Command();
+    bool redir_out = false;
+    bool redir_in = false;
 
     for (auto token : tokens) {
       if (token == "eof_exit") {
@@ -267,6 +279,8 @@ public:
         cmd.add_arg(nullptr);
         commands.push_back(std::move(cmd));
         cmd = Command();
+        redir_out = false;
+        redir_in = false;
       } else if (token == ">") {
         redir_out = true;
       } else if (token == "<") {
@@ -298,7 +312,7 @@ public:
     return 0;
   }
 
-  int exec_command(const std::vector<char *> &command) {
+  int exec_command(Command &command) {
     /*
      * Searches paths for command and attempts to execute via execv
      *
@@ -310,11 +324,23 @@ public:
      */
     std::string exec_path = "";
     for (auto path : paths) {
-      exec_path = path + '/' + command[0];
+      exec_path = path + '/' + command.get_args()[0];
       if (access(exec_path.c_str(), X_OK) == 0) {
-        if (execv(exec_path.c_str(), command.data()) == -1) {
+        if (!command.get_out_file().empty()) {
+          if (!std::freopen(command.get_out_file().c_str(), "w", stdout)) {
+            std::cerr << error_message;
+            return 1;
+          }
+        }
+        if (execv(exec_path.c_str(), command.get_args().data()) == -1) {
           std::cerr << error_message;
+          if (!command.get_out_file().empty()) {
+            std::fclose(stdout);
+          }
           return 1;
+        }
+        if (!command.get_out_file().empty()) {
+          std::fclose(stdout);
         }
         return 0;
       }
@@ -358,7 +384,7 @@ public:
             } else if (strcmp(cmd.get_args()[0], "path") == 0) {
               exit(path(cmd.get_args()));
             } else {
-              exit(exec_command(cmd.get_args()));
+              exit(exec_command(cmd));
             }
           } else {
             pid_list.push_back(pid);
@@ -381,7 +407,7 @@ public:
             if (pid == -1) {
               std::cerr << error_message;
             } else if (pid == 0) {
-              exit(exec_command(cmd.get_args()));
+              exit(exec_command(cmd));
             } else {
               pid_list.push_back(pid);
             }
@@ -414,16 +440,18 @@ public:
     std::ifstream ifs(file, std::ios::in);
     if (!ifs) {
       std::cerr << error_message;
+      return 1;
     }
+    bool valid_batch = false;
     while (std::getline(ifs, input)) {
-      // if (!run()) {
-      //   // std::cerr << error_message;
-      //   // return 1;
-      //   continue;
-      // }
+      valid_batch = true;
       run();
     }
     ifs.close();
+    if (!valid_batch) {
+      std::cerr << error_message;
+      return 1;
+    }
     return 0;
   }
 };
