@@ -89,7 +89,7 @@ public:
       switch (line[idx]) {
       case EOF:
         if (!cur_str.empty()) {
-          if (one_file && tokens.size() > 0 &&
+          if (one_file && !tokens.empty() &&
               delimeters.count(tokens[tokens.size() - 1]) == 0) {
             // Multiple files after redirection
             return {};
@@ -98,7 +98,7 @@ public:
           tokens.push_back(cur_str);
         }
 
-        if (tokens.size() > 0 && delimeters.count(tokens[tokens.size() - 1]) &&
+        if (!tokens.empty() && delimeters.count(tokens[tokens.size() - 1]) &&
             tokens[tokens.size() - 1] != "&") {
           // Line ended with an illegal special delimeter
           return {};
@@ -110,7 +110,7 @@ public:
       case ' ':
       case '\t':
         if (!cur_str.empty()) {
-          if (one_file && tokens.size() > 0 &&
+          if (one_file && !tokens.empty() &&
               delimeters.count(tokens[tokens.size() - 1]) == 0) {
             // Multiple files after redirection
             return {};
@@ -137,7 +137,7 @@ public:
         }
 
         if (!cur_str.empty()) {
-          if (one_file && tokens.size() > 0 &&
+          if (one_file && !tokens.empty() &&
               delimeters.count(tokens[tokens.size() - 1]) == 0) {
             // Multiple files after redirection
             return {};
@@ -178,7 +178,7 @@ public:
     }
 
     if (!cur_str.empty()) {
-      if (one_file && tokens.size() > 0 &&
+      if (one_file && !tokens.empty() &&
           delimeters.count(tokens[tokens.size() - 1]) == 0) {
         // Multiple files after redirection
         return {};
@@ -187,7 +187,7 @@ public:
       tokens.push_back(cur_str);
     }
 
-    if (tokens.size() > 0 && delimeters.count(tokens[tokens.size() - 1]) &&
+    if (!tokens.empty() && delimeters.count(tokens[tokens.size() - 1]) &&
         tokens[tokens.size() - 1] != "&") {
       // Line ended with an illegal special delimeter
       return {};
@@ -224,6 +224,12 @@ private:
      * Returns:
      *   exit code: 0 on success, 1 on error
      */
+    if (command.size() < 2 || command[command.size() - 1] != nullptr) {
+      // Incorrect path command
+      std::cerr << error_message;
+      return 1;
+    }
+
     paths.clear();
     for (size_t i = 1; i < command.size() - 1; i++) {
       paths.push_back(std::string(command[i]));
@@ -241,8 +247,7 @@ private:
      * Returns:
      *   exit code: 0 on success, 1 on error
      */
-    if (command.size() != 3 || strcmp(command[0], "cd") ||
-        command[2] != nullptr) {
+    if (command.size() != 3 || command[2] != nullptr) {
       // Incorrect cd command
       std::cerr << error_message;
       return 1;
