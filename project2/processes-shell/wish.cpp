@@ -231,8 +231,8 @@ private:
     }
 
     paths.clear();
-    for (size_t i = 1; i < command.size() - 1; i++) {
-      paths.push_back(std::string(command[i]));
+    for (size_t idx = 1; idx < command.size() - 1; idx++) {
+      paths.push_back(std::string(command[idx]));
     }
     return 0;
   }
