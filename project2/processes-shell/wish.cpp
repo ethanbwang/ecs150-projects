@@ -367,6 +367,7 @@ private:
             std::cerr << error_message;
             return 1;
           }
+          close(out_fd);
         }
         // Execute command
         if (execv(exec_path.c_str(), command.get_args().data()) == -1) {
@@ -374,13 +375,13 @@ private:
           std::cerr << error_message;
           if (!command.get_out_file().empty()) {
             // Close out file
-            close(out_fd);
+            close(STDOUT_FILENO);
           }
           return 1;
         }
         if (!command.get_out_file().empty()) {
           // Close out file
-          close(out_fd);
+          close(STDOUT_FILENO);
         }
         return 0;
       }
