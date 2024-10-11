@@ -357,9 +357,12 @@ private:
       exec_path = path + '/' + command.get_args()[0];
       if (access(exec_path.c_str(), X_OK) == 0) {
         // Found executable
+        int out_fd;
         if (!command.get_out_file().empty()) {
           // Redirect stdout to out file
-          if (!std::freopen(command.get_out_file().c_str(), "w", stdout)) {
+          out_fd = creat(command.get_out_file().c_str(),
+                         S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+          if (out_fd == -1 || dup2(out_fd, STDOUT_FILENO) == -1) {
             // Unsuccessful in redirecting stdout
             std::cerr << error_message;
             return 1;
@@ -371,13 +374,13 @@ private:
           std::cerr << error_message;
           if (!command.get_out_file().empty()) {
             // Close out file
-            std::fclose(stdout);
+            close(out_fd);
           }
           return 1;
         }
         if (!command.get_out_file().empty()) {
           // Close out file
-          std::fclose(stdout);
+          close(out_fd);
         }
         return 0;
       }
