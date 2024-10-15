@@ -247,6 +247,11 @@ int main(int argc, char *argv[]) {
       cerr << "Error creating thread\n";
       return 1;
     }
+
+    if (dthread_detach(thread_pool[i]) != 0) {
+      cerr << "Error detaching thread\n";
+      return 1;
+    }
   }
 
   // Supervisor loop (multi-threaded web server)
