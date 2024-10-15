@@ -28,6 +28,7 @@ int BUFFER_SIZE = 1;
 string BASEDIR = "static";
 string SCHEDALG = "FIFO";
 string LOGFILE = "/dev/null";
+int MODE = 1;
 
 vector<HttpService *> services;
 
@@ -204,7 +205,7 @@ int main(int argc, char *argv[]) {
   signal(SIGPIPE, SIG_IGN);
   int option;
 
-  while ((option = getopt(argc, argv, "d:p:t:b:s:l:")) != -1) {
+  while ((option = getopt(argc, argv, "d:p:t:b:s:l:m:")) != -1) {
     switch (option) {
     case 'd':
       BASEDIR = string(optarg);
@@ -224,6 +225,9 @@ int main(int argc, char *argv[]) {
     case 'l':
       LOGFILE = string(optarg);
       break;
+    case 'm':
+      MODE = atoi(optarg);
+      break;
     default:
       cerr << "usage: " << argv[0] << " [-p port] [-t threads] [-b buffers]"
            << endl;
@@ -241,56 +245,58 @@ int main(int argc, char *argv[]) {
   // for path prefix matching
   services.push_back(new FileService(BASEDIR));
 
-  pthread_t thread_pool[THREAD_POOL_SIZE];
-  // Create workers
-  for (int i = 0; i < THREAD_POOL_SIZE; i++) {
-    if (dthread_create(&thread_pool[i], NULL, &worker_job, NULL) != 0) {
-      cerr << "Error creating thread\n";
-      return 1;
-    }
+  if (MODE) {
+    pthread_t thread_pool[THREAD_POOL_SIZE];
+    // Create workers
+    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+      if (dthread_create(&thread_pool[i], NULL, &worker_job, NULL) != 0) {
+        cerr << "Error creating thread\n";
+        return 1;
+      }
 
-    if (dthread_detach(thread_pool[i]) != 0) {
-      cerr << "Error detaching thread\n";
-      return 1;
-    }
-  }
-
-  // Supervisor loop (multi-threaded web server)
-  while (true) {
-    // Wait for buffer to clear up
-    dthread_mutex_lock(&buf_full_cond_mutex);
-    while (static_cast<int>(req_queue.size()) == BUFFER_SIZE) {
-      if (dthread_cond_wait(&buf_full_cond, &buf_full_cond_mutex) != 0) {
-        cerr << "Wait on buffer full condition failed\n";
-        exit(1);
+      if (dthread_detach(thread_pool[i]) != 0) {
+        cerr << "Error detaching thread\n";
+        return 1;
       }
     }
-    dthread_mutex_unlock(&buf_full_cond_mutex);
 
-    // Wait for requests
-    sync_print("waiting_to_accept", "");
-    client = server->accept();
+    // Supervisor loop (multi-threaded web server)
+    while (true) {
+      // Wait for buffer to clear up
+      dthread_mutex_lock(&buf_full_cond_mutex);
+      while (static_cast<int>(req_queue.size()) == BUFFER_SIZE) {
+        if (dthread_cond_wait(&buf_full_cond, &buf_full_cond_mutex) != 0) {
+          cerr << "Wait on buffer full condition failed\n";
+          exit(1);
+        }
+      }
+      dthread_mutex_unlock(&buf_full_cond_mutex);
 
-    // Add request to queue
-    sync_print("client_accepted", "");
-    dthread_mutex_lock(&wait_cond_mutex);
-    dthread_mutex_lock(&req_queue_mutex);
+      // Wait for requests
+      sync_print("waiting_to_accept", "");
+      client = server->accept();
 
-    auto req_p = make_unique<HTTPRequest>(client, PORT);
-    read_request(client, req_p.get());
-    req_queue.push_back(make_pair(client, move(req_p)));
-    // Signal new request
-    dthread_cond_signal(&wait_cond);
+      // Add request to queue
+      sync_print("client_accepted", "");
+      dthread_mutex_lock(&wait_cond_mutex);
+      dthread_mutex_lock(&req_queue_mutex);
 
-    dthread_mutex_unlock(&req_queue_mutex);
-    dthread_mutex_unlock(&wait_cond_mutex);
+      auto req_p = make_unique<HTTPRequest>(client, PORT);
+      read_request(client, req_p.get());
+      req_queue.push_back(make_pair(client, move(req_p)));
+      // Signal new request
+      dthread_cond_signal(&wait_cond);
+
+      dthread_mutex_unlock(&req_queue_mutex);
+      dthread_mutex_unlock(&wait_cond_mutex);
+    }
+  } else {
+    // Single-threaded web server logic
+    while (true) {
+      sync_print("waiting_to_accept", "");
+      client = server->accept();
+      sync_print("client_accepted", "");
+      handle_request(client);
+    }
   }
-
-  // Single-threaded web server logic
-  // while (true) {
-  //   sync_print("waiting_to_accept", "");
-  //   client = server->accept();
-  //   sync_print("client_accepted", "");
-  //   handle_request(client);
-  // }
 }
