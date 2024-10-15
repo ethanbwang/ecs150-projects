@@ -362,8 +362,9 @@ private:
           // Redirect stdout to out file
           out_fd = creat(command.get_out_file().c_str(),
                          S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-          if (out_fd == -1 || dup2(out_fd, STDOUT_FILENO) == -1) {
-            // Unsuccessful in redirecting stdout
+          if (out_fd == -1 || dup2(out_fd, STDOUT_FILENO) == -1 ||
+              dup2(out_fd, STDERR_FILENO) == -1) {
+            // Unsuccessful in redirecting output
             std::cerr << error_message;
             return 1;
           }
@@ -376,12 +377,14 @@ private:
           if (!command.get_out_file().empty()) {
             // Close out file
             close(STDOUT_FILENO);
+            close(STDERR_FILENO);
           }
           return 1;
         }
         if (!command.get_out_file().empty()) {
           // Close out file
           close(STDOUT_FILENO);
+          close(STDERR_FILENO);
         }
         return 0;
       }
