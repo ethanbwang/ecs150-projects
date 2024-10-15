@@ -186,6 +186,7 @@ void *worker_job(void *emily) {
             << " client: " << (void *)client;
     sync_print("write_response", payload.str());
     cout << payload.str() << '\n';
+    client->write(response->response());
 
     // Close connection
     payload.str("");
