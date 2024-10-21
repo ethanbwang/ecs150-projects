@@ -1,7 +1,8 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include <iostream>
 #include <map>
@@ -20,13 +21,11 @@ FileService::FileService(string basedir) : HttpService("/") {
     cout << "invalid basedir" << endl;
     exit(1);
   }
-  
+
   this->m_basedir = basedir;
 }
 
-FileService::~FileService(){
-
-}
+FileService::~FileService() {}
 
 bool FileService::endswith(string str, string suffix) {
   size_t pos = str.rfind(suffix);
@@ -35,8 +34,15 @@ bool FileService::endswith(string str, string suffix) {
 
 void FileService::get(HTTPRequest *request, HTTPResponse *response) {
   string path = this->m_basedir + request->getPath();
+  if (path.find("..") != string::npos) {
+    response->setStatus(403);
+    return;
+  }
   string fileContents = this->readFile(path);
   if (fileContents.size() == 0) {
+    response->setStatus(404);
+    return;
+  } else if (fileContents[0] == static_cast<char>(0)) {
     response->setStatus(403);
     return;
   } else {
@@ -52,7 +58,11 @@ void FileService::get(HTTPRequest *request, HTTPResponse *response) {
 string FileService::readFile(string path) {
   int fd = open(path.c_str(), O_RDONLY);
   if (fd < 0) {
-    return "";
+    if (errno == EACCES || errno == EISDIR) {
+      return string(1, static_cast<char>(0));
+    } else {
+      return "";
+    }
   }
 
   string result;
@@ -63,7 +73,7 @@ string FileService::readFile(string path) {
   }
 
   close(fd);
-  
+
   return result;
 }
 

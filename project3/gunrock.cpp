@@ -111,91 +111,37 @@ void handle_request(MySocket *client) {
 // Shared variables
 pthread_mutex_t req_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-pthread_mutex_t wait_cond_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t wait_cond = PTHREAD_COND_INITIALIZER;
-
-pthread_mutex_t buf_full_cond_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t buf_full_cond = PTHREAD_COND_INITIALIZER;
 
-deque<pair<MySocket *, unique_ptr<HTTPRequest>>> req_queue =
-    deque<pair<MySocket *, unique_ptr<HTTPRequest>>>();
-
-void read_request(MySocket *client, HTTPRequest *request) {
-  // Reads a request from the client into request
-  stringstream payload;
-
-  // read in the request
-  bool readResult = false;
-  try {
-    payload << "client: " << (void *)client;
-    sync_print("read_request_enter", payload.str());
-    readResult = request->readRequest();
-    sync_print("read_request_return", payload.str());
-  } catch (...) {
-    // swallow it
-  }
-
-  if (!readResult) {
-    // there was a problem reading in the request, bail
-    sync_print("read_request_error", payload.str());
-    return;
-  }
-}
+deque<MySocket *> req_queue = deque<MySocket *>();
 
 void *worker_job(void *emily) {
   /*
    * Worker thread function
-   * Waits for a request, then processes it, responds to the client, and cleans
-   * up.
+   * Waits for a connection then handles request
    */
   // Worker loop
   while (true) {
     // Wait for a request
-    dthread_mutex_lock(&wait_cond_mutex);
+    dthread_mutex_lock(&req_queue_mutex);
     while (req_queue.size() == 0) {
-      if (dthread_cond_wait(&wait_cond, &wait_cond_mutex) != 0) {
+      if (dthread_cond_wait(&wait_cond, &req_queue_mutex) != 0) {
         cerr << "Wait on wait condition failed\n";
         return NULL;
       }
     }
-    dthread_mutex_unlock(&wait_cond_mutex);
-
     // Process request
     // Get request at front of the queue
-    dthread_mutex_lock(&buf_full_cond_mutex);
-    dthread_mutex_lock(&req_queue_mutex);
-
-    MySocket *client = req_queue.front().first;
-    unique_ptr<HTTPRequest> req = move(req_queue.front().second);
+    MySocket *client = req_queue.front();
     req_queue.pop_front();
     // Signal that a request was processed (buffer shrunk by 1)
     dthread_cond_signal(&buf_full_cond);
 
     dthread_mutex_unlock(&req_queue_mutex);
-    dthread_mutex_unlock(&buf_full_cond_mutex);
 
     // Handle request
-    auto response = make_unique<HTTPResponse>();
-    *response = HTTPResponse();
-    stringstream payload;
-
-    HttpService *service = find_service(req.get());
-    invoke_service_method(service, req.get(), response.get());
-
-    // Send data back to the client
-    payload << " RESPONSE " << response->getStatus()
-            << " client: " << (void *)client;
-    sync_print("write_response", payload.str());
-    cout << payload.str() << '\n';
-    client->write(response->response());
-
-    // Close connection
-    payload.str("");
-    payload.clear();
-    payload << " client: " << (void *)client;
-    sync_print("close_connection", payload.str());
-    client->close();
-    delete client;
+    handle_request(client);
   }
   return NULL;
 }
@@ -238,7 +184,7 @@ int main(int argc, char *argv[]) {
   set_log_file(LOGFILE);
 
   sync_print("init", "");
-  MyServerSocket *server = new MyServerSocket(PORT);
+  auto server = make_unique<MyServerSocket>(PORT);
   MySocket *client;
 
   // The order that you push services dictates the search order
@@ -262,33 +208,25 @@ int main(int argc, char *argv[]) {
 
     // Supervisor loop (multi-threaded web server)
     while (true) {
+      // Wait for requests
+      sync_print("waiting_to_accept", "");
+      client = server->accept();
+      sync_print("client_accepted", "");
+
       // Wait for buffer to clear up
-      dthread_mutex_lock(&buf_full_cond_mutex);
-      while (static_cast<int>(req_queue.size()) == BUFFER_SIZE) {
-        if (dthread_cond_wait(&buf_full_cond, &buf_full_cond_mutex) != 0) {
+      dthread_mutex_lock(&req_queue_mutex);
+      while (static_cast<int>(req_queue.size()) >= BUFFER_SIZE) {
+        if (dthread_cond_wait(&buf_full_cond, &req_queue_mutex) != 0) {
           cerr << "Wait on buffer full condition failed\n";
           exit(1);
         }
       }
-      dthread_mutex_unlock(&buf_full_cond_mutex);
 
-      // Wait for requests
-      sync_print("waiting_to_accept", "");
-      client = server->accept();
-
-      // Add request to queue
-      sync_print("client_accepted", "");
-      dthread_mutex_lock(&wait_cond_mutex);
-      dthread_mutex_lock(&req_queue_mutex);
-
-      auto req_p = make_unique<HTTPRequest>(client, PORT);
-      read_request(client, req_p.get());
-      req_queue.push_back(make_pair(client, move(req_p)));
+      req_queue.push_back(client);
       // Signal new request
       dthread_cond_signal(&wait_cond);
 
       dthread_mutex_unlock(&req_queue_mutex);
-      dthread_mutex_unlock(&wait_cond_mutex);
     }
   } else {
     // Single-threaded web server logic
