@@ -12,7 +12,15 @@ using namespace std;
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {
-    cout << argv[0] << ": diskImageFile" << endl;
+    cerr << argv[0] << ": diskImageFile" << endl;
     return 1;
   }
+
+  // Parse command line arguments
+  /*
+  Disk *disk = new Disk(argv[1], UFS_BLOCK_SIZE);
+  LocalFileSystem *fileSystem = new LocalFileSystem(disk);
+  */
+  
+  return 0;
 }

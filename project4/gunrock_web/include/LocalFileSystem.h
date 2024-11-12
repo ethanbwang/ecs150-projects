@@ -93,7 +93,7 @@ class LocalFileSystem {
    * already exists.
    *
    * Success: number of bytes written
-   * Failure: -EINVALIDINODE, -EINVALIDSIZE, -EINVALIDTYPE, -ENOTENOUGHSPACE.
+   * Failure: -EINVALIDINODE, -EINVALIDSIZE, -EINVALIDTYPE.
    * Failure modes: invalid inodeNumber, invalid size, not a regular file
    * (because you can't write to directories).
    */
@@ -119,8 +119,7 @@ class LocalFileSystem {
    * parentInodeNumber.
    *
    * Success: 0
-   * Failure: -EINVALIDINODE, -EDIRNOTEMPTY, -EINVALIDNAME, -ENOTENOUGHSPACE,
-   *          -EUNLINKNOTALLOWED
+   * Failure: -EINVALIDINODE, -EDIRNOTEMPTY, -EINVALIDNAME, -EUNLINKNOTALLOWED
    * Failure modes: parentInodeNumber does not exist, directory is NOT
    * empty, or the name is invalid. Note that the name not existing is NOT
    * a failure by our definition. You can't unlink '.' or '..'
@@ -134,14 +133,6 @@ class LocalFileSystem {
    * of trying to identify individual disk blocks and accessing only these.
    */
   void readSuperBlock(super_t *super);
-
-  /**
-   * numDataBytesNeeded is converted to blocks and added to numDataBlocksNeeded
-   * Having two separate arguments for data helps for operations that write
-   * new data to two separate entities. If you don't need a value
-   * you can set the number needed to 0.
-   */
-  bool diskHasSpace(super_t *super, int numInodesNeeded, int numDataBytesNeeded, int numDataBlocksNeeded=0);
 
   // Helper functions, you should read/write the entire inode and bitmap regions
   void readInodeBitmap(super_t *super, unsigned char *inodeBitmap);
