@@ -168,6 +168,9 @@ int LocalFileSystem::stat(int inodeNumber, inode_t *inode) {
 }
 
 int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
+  if (size < 0) {
+    return -EINVALIDSIZE;
+  }
   // 1. Check existence of inode
   super_t super = super_t();
   readSuperBlock(&super);
@@ -371,7 +374,50 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
 }
 
 int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
-  return 0;
+  if (size < 0) {
+    return -EINVALIDSIZE;
+  }
+  // Assume 0-based inode indexing
+  super_t super = super_t();
+  readSuperBlock(&super);
+  if (inodeNumber < 0 || inodeNumber >= super.num_inodes) {
+    return -EINVALIDINODE;
+  }
+
+  unsigned char inode_bitmap[super.inode_bitmap_len * UFS_BLOCK_SIZE];
+  readInodeBitmap(&super, inode_bitmap);
+
+  // Check if inode is allocated
+  int byte_offset = inodeNumber % 8;
+  int bitmap_byte = inodeNumber / 8;
+  char bitmask = 0b1 << byte_offset;
+  if (!(inode_bitmap[bitmap_byte] & bitmask)) {
+    return -EINVALIDINODE;
+  }
+
+  // Check if parent inode is a directory inode
+  inode_t inodes[super.num_inodes];
+  readInodeRegion(&super, inodes);
+  inode_t inode = inodes[inodeNumber];
+  if (inode.type == UFS_DIRECTORY) {
+    return -EINVALIDTYPE;
+  }
+
+  int bytes_written = 0;
+  // 1. Check if more data blocks are required
+  // 2. Allocate more data blocks if necessary
+  // 3. Update inode size and add blocks to direct pointer list
+  // 4. Write to disk
+  disk->beginTransaction();
+  const char *buffer_p = static_cast<const char *>(buffer);
+  for (int idx = 0; idx < num_blocks; idx++) {
+    const void *tmp = static_cast<const void *>(buffer_p);
+    disk->writeBlock(inode.direct[idx], const_cast<void *>(tmp));
+    buffer_p += UFS_BLOCK_SIZE;
+  }
+
+  disk->commit();
+  return bytes_written;
 }
 
 int LocalFileSystem::unlink(int parentInodeNumber, string name) {
