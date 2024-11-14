@@ -286,7 +286,6 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
       } else if (++entries_processed == total_entries) {
         // Searched all entries without finding name
         // Create new inode
-        disk->beginTransaction();
         // 1. Find first free inode in bitmap
         int free_inode_number = -1;
         int num_shifts = -1;
@@ -295,7 +294,6 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
                         num_shifts, bitmap_byte);
         if (free_inode_number < 0) {
           // No free inode
-          disk->rollback();
           return -ENOTENOUGHSPACE;
         }
         // Pre-allocate inode
@@ -310,7 +308,6 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
                         num_shifts, bitmap_byte);
         if (free_data_number < 0) {
           // No free data block
-          disk->rollback();
           return -ENOTENOUGHSPACE;
         }
         // Preallocate data block
@@ -335,7 +332,6 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
                           num_shifts, bitmap_byte);
           if (parent_block_number < 0) {
             // No free data block for parent
-            disk->rollback();
             return -ENOTENOUGHSPACE;
           }
           // Allocate data block
@@ -357,6 +353,8 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
         strcpy(parent_dir_ent_block[block_offset].name, name.c_str());
 
         // 5. Create . and .. entries if type is directory
+        // Begin transaction here since writeBlock may be called in conditional
+        disk->beginTransaction();
         if (type == UFS_DIRECTORY) {
           // New block, no need to read
           dir_ent_t child_dir_ent_block[UFS_BLOCK_SIZE / sizeof(dir_ent_t)];
@@ -371,7 +369,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
                            child_dir_ent_block);
         }
 
-        // Write changes
+        // 6. Write changes
         writeInodeBitmap(&super, inode_bitmap);
         writeInodeRegion(&super, inodes);
         writeDataBitmap(&super, data_bitmap);
@@ -392,8 +390,123 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
 }
 
 int LocalFileSystem::unlink(int parentInodeNumber, string name) {
+  // Make sure name is valid
+  if (name.length() <= 0 || name.length() > 27) {
+    return -EINVALIDNAME;
+  }
   if (name == "." || name == "..") {
     return -EUNLINKNOTALLOWED;
   }
+
+  // Assume 0-based inode indexing
+  super_t super = super_t();
+  readSuperBlock(&super);
+  if (parentInodeNumber < 0 || parentInodeNumber >= super.num_inodes) {
+    return -EINVALIDINODE;
+  }
+
+  unsigned char inode_bitmap[super.inode_bitmap_len * UFS_BLOCK_SIZE];
+  readInodeBitmap(&super, inode_bitmap);
+
+  // Check if parent inode is allocated
+  int byte_offset = parentInodeNumber % 8;
+  int bitmap_byte = parentInodeNumber / 8;
+  char bitmask = 0b1 << byte_offset;
+  if (!(inode_bitmap[bitmap_byte] & bitmask)) {
+    return -EINVALIDINODE;
+  }
+
+  // Check if parent inode is a directory inode
+  inode_t inodes[super.num_inodes];
+  readInodeRegion(&super, inodes);
+  inode_t parent_inode = inodes[parentInodeNumber];
+  if (parent_inode.type != UFS_DIRECTORY) {
+    return -EINVALIDINODE;
+  }
+
+  // Check if name exists in directory
+  dir_ent_t buffer[UFS_BLOCK_SIZE / sizeof(dir_ent_t)];
+  int entries_processed = 0;
+  int total_entries = parent_inode.size / sizeof(dir_ent_t);
+  for (unsigned int dp : parent_inode.direct) {
+    disk->readBlock(dp, buffer);
+    for (unsigned int idx = 0; idx < UFS_BLOCK_SIZE / sizeof(dir_ent_t);
+         idx++) {
+      if (buffer[idx].name == name) {
+        // 1. If inode type is directory, make sure it's empty
+        inode_t inode = inodes[buffer[idx].inum];
+        if (inode.type == UFS_DIRECTORY && inode.size > 2 * sizeof(dir_ent_t)) {
+          return -EDIRNOTEMPTY;
+        }
+
+        // 2. For each direct pointer in inode, unallocate representative bit on
+        // bitmap
+        unsigned char data_bitmap[UFS_BLOCK_SIZE * super.data_bitmap_len];
+        readDataBitmap(&super, data_bitmap);
+        int num_blocks = inode.size / UFS_BLOCK_SIZE;
+        if (inode.size % UFS_BLOCK_SIZE) {
+          num_blocks++;
+        }
+        // Unset each data bit
+        for (int idx = 0; idx < num_blocks; idx++) {
+          byte_offset = inode.direct[idx] % 8;
+          bitmap_byte = inode.direct[idx] / 8;
+          data_bitmap[bitmap_byte] &= ~(0b1 << byte_offset);
+        }
+
+        // 3. Unallocate inode
+        byte_offset = buffer[idx].inum % 8;
+        bitmap_byte = buffer[idx].inum / 8;
+        inode_bitmap[bitmap_byte] &= ~(0b1 << byte_offset);
+
+        // 4. Remove directory entry from parent and reduce parent size by
+        // sizeof(dir_ent_t)
+        // Find directory entry and replace with last directory entry
+        num_blocks = parent_inode.size / UFS_BLOCK_SIZE;
+        if (parent_inode.size % UFS_BLOCK_SIZE) {
+          num_blocks++;
+        }
+        int num_ents = parent_inode.size / sizeof(dir_ent_t);
+        dir_ent_t dir_ents[num_ents];
+        // Read all entries into memory
+        read(parentInodeNumber, dir_ents, num_ents);
+        if (dir_ents[num_ents - 1].name != name) {
+          // Find directory entry
+          for (int idx = 0; idx < num_ents; idx++) {
+            if (dir_ents[idx].name == name) {
+              // Replace with last entry to avoid shifting all entries forward
+              dir_ents[idx] = dir_ents[num_ents - 1];
+              break;
+            }
+          }
+        }
+        // Reduce parent size
+        parent_inode.size -= sizeof(dir_ent_t);
+        // If parent size now spans fewer blocks, unallocate last data block
+        byte_offset = parent_inode.direct[num_blocks - 1] % 8;
+        bitmap_byte = parent_inode.direct[num_blocks - 1] / 8;
+        data_bitmap[bitmap_byte] &= ~(0b1 << byte_offset);
+        num_blocks--;
+
+        // 5. Write to disk
+        disk->beginTransaction();
+        writeInodeBitmap(&super, inode_bitmap);
+        writeInodeRegion(&super, inodes);
+        writeDataBitmap(&super, data_bitmap);
+        // Write new directory entries
+        int ents_per_block = UFS_BLOCK_SIZE / sizeof(dir_ent_t);
+        dir_ent_t *dir_ents_p = dir_ents;
+        for (int idx = 0; idx < num_blocks; idx++) {
+          disk->writeBlock(parent_inode.direct[idx], dir_ents_p);
+          dir_ents_p += ents_per_block;
+        }
+        disk->commit();
+      } else if (++entries_processed == total_entries) {
+        // Searched all entries without finding name
+        return 0;
+      }
+    }
+  }
+
   return 0;
 }
