@@ -398,17 +398,51 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   // Check if parent inode is a directory inode
   inode_t inodes[super.num_inodes];
   readInodeRegion(&super, inodes);
-  inode_t inode = inodes[inodeNumber];
+  inode_t &inode = inodes[inodeNumber];
   if (inode.type == UFS_DIRECTORY) {
     return -EINVALIDTYPE;
   }
 
   int bytes_written = 0;
-  // 1. Check if more data blocks are required
-  // 2. Allocate more data blocks if necessary
-  // 3. Update inode size and add blocks to direct pointer list
-  // 4. Write to disk
+  // 1. Check if more data blocks are required, allocate more data blocks if
+  // necessary
+  int num_blocks = inode.size / UFS_BLOCK_SIZE;
+  if (inode.size % UFS_BLOCK_SIZE) {
+    num_blocks++;
+  }
+  int num_req_blocks = size / UFS_BLOCK_SIZE;
+  if (size % UFS_BLOCK_SIZE) {
+    num_req_blocks++;
+  }
+  // Allocate data blocks if necessary
   disk->beginTransaction();
+  if (num_req_blocks > num_blocks) {
+    int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
+    unsigned char data_bitmap[data_bitmap_size];
+    readDataBitmap(&super, data_bitmap);
+    int free_block_num = -1;
+    int num_shifts = 0;
+    for (int idx = 0; idx < num_req_blocks - num_blocks; idx++) {
+      __find_free_bit(data_bitmap_size, data_bitmap, free_block_num, num_shifts,
+                      bitmap_byte);
+      if (free_block_num < 0) {
+        // No more memory
+        disk->rollback();
+        return -EINVALIDSIZE;
+      }
+      // Preallocate data block
+      data_bitmap[bitmap_byte] |= 0b1 << num_shifts;
+      // Add data block number to inode's direct pointer list
+      inode.direct[num_blocks++] = free_block_num;
+    }
+    // Write bitmap
+    writeDataBitmap(&super, data_bitmap);
+  }
+  // Update inode size
+  inode.size = size;
+
+  // 2. Write to disk
+  writeInodeRegion(&super, inodes);
   const char *buffer_p = static_cast<const char *>(buffer);
   for (int idx = 0; idx < num_blocks; idx++) {
     const void *tmp = static_cast<const void *>(buffer_p);
