@@ -353,7 +353,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
 
   // 5. Create . and .. entries if type is directory
   // Begin transaction here since writeBlock may be called in conditional
-  disk->beginTransaction();
+  // disk->beginTransaction();
   if (type == UFS_DIRECTORY) {
     // New block, no need to read
     dir_ent_t child_dir_ent_block[UFS_BLOCK_SIZE / sizeof(dir_ent_t)];
@@ -376,7 +376,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
                    parent_dir_ent_block);
 
   // Commit
-  disk->commit();
+  // disk->commit();
   return free_inode_number;
 }
 
@@ -422,7 +422,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     num_req_blocks++;
   }
   // Allocate/deallocate data blocks if necessary
-  disk->beginTransaction();
+  // disk->beginTransaction();
   if (num_req_blocks > num_blocks) {
     // Allocate data blocks
     int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
@@ -485,7 +485,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     buffer_p += UFS_BLOCK_SIZE;
   }
 
-  disk->commit();
+  // disk->commit();
   return bytes_written;
 }
 
@@ -590,7 +590,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
       num_blocks--;
 
       // 5. Write to disk
-      disk->beginTransaction();
+      // disk->beginTransaction();
       writeInodeBitmap(&super, inode_bitmap);
       writeInodeRegion(&super, inodes);
       writeDataBitmap(&super, data_bitmap);
@@ -601,7 +601,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
         disk->writeBlock(parent_inode.direct[idx], dir_ents_p);
         dir_ents_p += ents_per_block;
       }
-      disk->commit();
+      // disk->commit();
     }
   }
   // Either unlinked file or didn't find name in directory
