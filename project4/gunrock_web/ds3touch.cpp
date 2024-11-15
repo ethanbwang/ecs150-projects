@@ -24,10 +24,13 @@ int main(int argc, char *argv[]) {
   int parentInode = stoi(argv[2]);
   string fileName = string(argv[3]);
 
+  disk->beginTransaction();
   if (fileSystem->create(parentInode, UFS_REGULAR_FILE, fileName) < 0) {
+    disk->rollback();
     cerr << "Error creating file" << endl;
     return 1;
   }
+  disk->commit();
 
   return 0;
 }

@@ -51,37 +51,25 @@ void LocalFileSystem::writeDataBitmap(super_t *super,
 }
 
 void LocalFileSystem::readInodeRegion(super_t *super, inode_t *inodes) {
-  // Get number of blocks that inode region spans
-  int num_inode_blocks = super->num_inodes * sizeof(inode_t) / UFS_BLOCK_SIZE;
-  if (super->num_inodes * sizeof(inode_t) % UFS_BLOCK_SIZE) {
-    num_inode_blocks++;
-  }
-
-  // Read inode region into inodes
   int inodes_per_block = UFS_BLOCK_SIZE / sizeof(inode_t);
-  for (int block_num = 0; block_num < num_inode_blocks; block_num++) {
+  for (int block_num = 0; block_num < super->inode_region_len; block_num++) {
     disk->readBlock(super->inode_region_addr + block_num,
                     inodes + inodes_per_block * block_num);
   }
 }
 
 void LocalFileSystem::writeInodeRegion(super_t *super, inode_t *inodes) {
-  // Get number of blocks that inode region spans
-  int num_inode_blocks = super->num_inodes * sizeof(inode_t) / UFS_BLOCK_SIZE;
-  if (super->num_inodes * sizeof(inode_t) % UFS_BLOCK_SIZE) {
-    num_inode_blocks++;
-  }
-
-  // Write inodes into inode region
   int inodes_per_block = UFS_BLOCK_SIZE / sizeof(inode_t);
-  for (int block_num = 0; block_num < num_inode_blocks; block_num++) {
+  for (int block_num = 0; block_num < super->inode_region_len; block_num++) {
     disk->writeBlock(super->inode_region_addr + block_num,
                      inodes + inodes_per_block * block_num);
   }
 }
 
-void __find_free_bit(const int &bitmap_size, unsigned char bitmap[],
-                     int &free_bit_number, int &num_shifts, int &bitmap_byte) {
+void __find_free_bit(const int &bitmap_size, const int &num_entries,
+                     unsigned char bitmap[], int &free_bit_number,
+                     int &num_shifts, int &bitmap_byte) {
+  int entries_parsed = 0;
   for (int idx = 0; idx < bitmap_size; idx++) {
     if (bitmap[idx] != 0xff) {
       free_bit_number = idx * 8;
@@ -92,8 +80,19 @@ void __find_free_bit(const int &bitmap_size, unsigned char bitmap[],
         num_shifts++;
       }
       // free_inode_number now points to the first free inode
+      // Check that it is a valid inode
+      if (free_bit_number + num_shifts >= num_entries) {
+        // No valid inodes available
+        free_bit_number = -1;
+        return;
+      }
       free_bit_number += num_shifts;
       bitmap_byte = idx;
+      return;
+    }
+    // 8 entries per byte
+    entries_parsed += 8;
+    if (entries_parsed >= num_entries) {
       return;
     }
   }
@@ -123,7 +122,7 @@ int LocalFileSystem::lookup(int parentInodeNumber, string name) {
   }
 
   // Check if parent inode is a directory inode
-  inode_t inodes[super.num_inodes];
+  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   if (inodes[parentInodeNumber].type != UFS_DIRECTORY) {
     return -EINVALIDINODE;
@@ -161,7 +160,7 @@ int LocalFileSystem::stat(int inodeNumber, inode_t *inode) {
     return -EINVALIDINODE;
   }
 
-  inode_t inodes[super.num_inodes];
+  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   *inode = inodes[inodeNumber];
   return 0;
@@ -190,7 +189,7 @@ int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
   }
   // 2. Check inode type and requirements
   // Read in inodes
-  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE];
+  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   inode_t inode = inodes[inodeNumber];
   if (inode.type == UFS_DIRECTORY && size % sizeof(dir_ent_t)) {
@@ -263,7 +262,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   }
 
   // Check if parent inode is a directory inode
-  inode_t inodes[super.num_inodes];
+  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   inode_t &parent_inode = inodes[parentInodeNumber];
   if (parent_inode.type != UFS_DIRECTORY) {
@@ -289,8 +288,8 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   // 1. Find first free inode in bitmap
   int free_inode_number = -1;
   int num_shifts = 0;
-  __find_free_bit(inode_bitmap_size, inode_bitmap, free_inode_number,
-                  num_shifts, bitmap_byte);
+  __find_free_bit(inode_bitmap_size, super.num_inodes, inode_bitmap,
+                  free_inode_number, num_shifts, bitmap_byte);
   if (free_inode_number < 0) {
     // No free inode
     return -ENOTENOUGHSPACE;
@@ -305,8 +304,8 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   int free_data_number = -1;
   num_shifts = 0;
   if (type == UFS_DIRECTORY) {
-    __find_free_bit(data_bitmap_size, data_bitmap, free_data_number, num_shifts,
-                    bitmap_byte);
+    __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
+                    free_data_number, num_shifts, bitmap_byte);
     if (free_data_number < 0) {
       // No free data block
       return -ENOTENOUGHSPACE;
@@ -332,8 +331,8 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
     // Allocate new data block for parent if possible
     int parent_block_number = -1;
     num_shifts = 0;
-    __find_free_bit(data_bitmap_size, data_bitmap, parent_block_number,
-                    num_shifts, bitmap_byte);
+    __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
+                    parent_block_number, num_shifts, bitmap_byte);
     if (parent_block_number < 0) {
       // No free data block for parent
       return -ENOTENOUGHSPACE;
@@ -406,7 +405,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   }
 
   // Check if parent inode is a directory inode
-  inode_t inodes[super.num_inodes];
+  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   inode_t &inode = inodes[inodeNumber];
   if (inode.type == UFS_DIRECTORY) {
@@ -434,8 +433,8 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     int free_block_num = -1;
     int num_shifts = 0;
     for (int idx = num_blocks; idx < num_req_blocks; idx++) {
-      __find_free_bit(data_bitmap_size, data_bitmap, free_block_num, num_shifts,
-                      bitmap_byte);
+      __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
+                      free_block_num, num_shifts, bitmap_byte);
       if (free_block_num < 0) {
         break;
       }
@@ -527,7 +526,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
   }
 
   // Check if parent inode is a directory inode
-  inode_t inodes[super.num_inodes];
+  inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   inode_t &parent_inode = inodes[parentInodeNumber];
   if (parent_inode.type != UFS_DIRECTORY) {

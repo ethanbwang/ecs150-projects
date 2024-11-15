@@ -24,10 +24,13 @@ int main(int argc, char *argv[]) {
   int parentInode = stoi(argv[2]);
   string directory = string(argv[3]);
 
+  disk->beginTransaction();
   if (fileSystem->create(parentInode, UFS_DIRECTORY, directory) < 0) {
+    disk->rollback();
     cerr << "Error creating directory" << endl;
     return 1;
   }
+  disk->commit();
 
   return 0;
 }

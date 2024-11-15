@@ -43,11 +43,14 @@ int main(int argc, char *argv[]) {
     w_buf += r_buf;
   }
 
+  disk->beginTransaction();
   if (static_cast<unsigned int>(fileSystem->write(
           dstInode, w_buf.c_str(), w_buf.length())) != w_buf.length()) {
+    disk->rollback();
     cerr << "Could not write to dst_file" << endl;
     return 1;
   }
+  disk->commit();
 
   close(local_fp);
 

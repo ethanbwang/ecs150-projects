@@ -23,10 +23,13 @@ int main(int argc, char *argv[]) {
   int parentInode = stoi(argv[2]);
   string entryName = string(argv[3]);
 
+  disk->beginTransaction();
   if (fileSystem->unlink(parentInode, entryName) < 0) {
+    disk->rollback();
     cerr << "Could not remove file or directory" << endl;
     return 1;
   }
+  disk->commit();
 
   return 0;
 }
