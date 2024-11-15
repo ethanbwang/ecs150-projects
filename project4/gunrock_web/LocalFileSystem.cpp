@@ -414,15 +414,16 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   if (size % UFS_BLOCK_SIZE) {
     num_req_blocks++;
   }
-  // Allocate data blocks if necessary
+  // Allocate/deallocate data blocks if necessary
   disk->beginTransaction();
   if (num_req_blocks > num_blocks) {
+    // Allocate data blocks
     int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
     unsigned char data_bitmap[data_bitmap_size];
     readDataBitmap(&super, data_bitmap);
     int free_block_num = -1;
     int num_shifts = 0;
-    for (int idx = 0; idx < num_req_blocks - num_blocks; idx++) {
+    for (int idx = num_blocks; idx < num_req_blocks; idx++) {
       __find_free_bit(data_bitmap_size, data_bitmap, free_block_num, num_shifts,
                       bitmap_byte);
       if (free_block_num < 0) {
@@ -433,7 +434,26 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
       // Preallocate data block
       data_bitmap[bitmap_byte] |= 0b1 << num_shifts;
       // Add data block number to inode's direct pointer list
-      inode.direct[num_blocks++] = free_block_num;
+      inode.direct[idx] = free_block_num;
+    }
+    // Write bitmap
+    writeDataBitmap(&super, data_bitmap);
+  } else if (num_req_blocks < num_blocks) {
+    // Deallocate data blocks
+    int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
+    unsigned char data_bitmap[data_bitmap_size];
+    readDataBitmap(&super, data_bitmap);
+    int num_shifts = 0;
+    for (int idx = num_blocks - 1; idx >= num_req_blocks; idx--) {
+      // Deallocate data block
+      bitmap_byte = inode.direct[idx] / 8;
+      num_shifts = inode.direct[idx] % 8;
+      // TODO: Remove if block once done with assignment
+      if (!(data_bitmap[bitmap_byte] & 0b1 << num_shifts)) {
+        cerr << "Data bit is not set when it should be set" << endl;
+        return -EINVALIDINODE;
+      }
+      data_bitmap[bitmap_byte] &= ~(0b1 << num_shifts);
     }
     // Write bitmap
     writeDataBitmap(&super, data_bitmap);
@@ -444,7 +464,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   // 2. Write to disk
   writeInodeRegion(&super, inodes);
   const char *buffer_p = static_cast<const char *>(buffer);
-  for (int idx = 0; idx < num_blocks; idx++) {
+  for (int idx = 0; idx < num_req_blocks; idx++) {
     const void *tmp = static_cast<const void *>(buffer_p);
     disk->writeBlock(inode.direct[idx], const_cast<void *>(tmp));
     buffer_p += UFS_BLOCK_SIZE;
