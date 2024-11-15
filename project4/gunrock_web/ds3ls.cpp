@@ -68,14 +68,6 @@ int main(int argc, char *argv[]) {
     // List directory
     int bytes_read = 0;
     if (inode.type == UFS_REGULAR_FILE) {
-      // TODO: use this for cat
-      // char buffer[inode.size];
-      // bytes_read = fileSystem->read(inode_num, buffer, inode.size);
-      // if (bytes_read < 0) {
-      //   cerr << "Directory not found" << endl;
-      //   return 1;
-      // }
-      // cout << string(buffer, bytes_read) << endl;
       // Create parent inode
       inode_t parent_inode = inode_t();
       if (fileSystem->stat(parent_inode_num, &parent_inode)) {

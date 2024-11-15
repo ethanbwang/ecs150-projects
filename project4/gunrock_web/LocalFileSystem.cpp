@@ -205,7 +205,8 @@ int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
 
   for (int idx = 0; idx < num_blocks; idx++) {
     // Read block
-    disk->readBlock(super.data_region_addr + inode.direct[idx++], read_buf);
+    // disk->readBlock(super.data_region_addr + inode.direct[idx++], read_buf);
+    disk->readBlock(inode.direct[idx++], read_buf);
     if (size > UFS_BLOCK_SIZE) {
       // Can copy the whole block
       memcpy(buf_offset, read_buf, UFS_BLOCK_SIZE);
