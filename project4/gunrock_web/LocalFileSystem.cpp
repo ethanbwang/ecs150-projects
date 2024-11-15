@@ -519,7 +519,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
   // Check if parent inode is a directory inode
   inode_t inodes[super.num_inodes];
   readInodeRegion(&super, inodes);
-  inode_t parent_inode = inodes[parentInodeNumber];
+  inode_t &parent_inode = inodes[parentInodeNumber];
   if (parent_inode.type != UFS_DIRECTORY) {
     return -EINVALIDINODE;
   }

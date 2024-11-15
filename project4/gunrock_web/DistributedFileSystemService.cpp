@@ -27,9 +27,11 @@ DistributedFileSystemService::DistributedFileSystemService(string diskFile)
 void DistributedFileSystemService::get(HTTPRequest *request,
                                        HTTPResponse *response) {
   string path = request->getPath();
+  // Check that path starts with /ds3/
   if (path.substr(0, 5) != pathPrefix()) {
     throw ClientError::badRequest();
   }
+  // Remove /ds3
   path.erase(0, 4);
   if (path.find("..") != string::npos) {
     throw ClientError::badRequest();
@@ -103,20 +105,100 @@ void DistributedFileSystemService::get(HTTPRequest *request,
 
 void DistributedFileSystemService::put(HTTPRequest *request,
                                        HTTPResponse *response) {
-  string path = this->pathPrefix() + request->getPath();
-  if (path.find("..") != string::npos) {
-    response->setStatus(403);
-    return;
+  string path = request->getPath();
+  // Check that path starts with /ds3/
+  if (path.substr(0, 5) != pathPrefix()) {
+    throw ClientError::badRequest();
   }
+  // Remove /ds3
+  path.erase(0, 4);
+  if (path.find("..") != string::npos) {
+    throw ClientError::badRequest();
+    // response->setStatus(403);
+    // return;
+  }
+  // Find inode of last path segment
+  int inode_num = UFS_ROOT_DIRECTORY_INODE_NUMBER;
+  if (path.length() > 1) {
+    string segment = "";
+    for (auto iter = path.begin() + 1; iter != path.end(); iter++) {
+      if (*iter == '/') {
+        inode_num = fileSystem->lookup(inode_num, segment);
+        if (inode_num < 0) {
+          throw ClientError::notFound();
+        }
+        segment = "";
+      } else {
+        segment += *iter;
+      }
+    }
+    // One more time for last path segment
+    if (segment.length()) {
+      inode_num = fileSystem->lookup(inode_num, segment);
+      if (inode_num < 0) {
+        throw ClientError::notFound();
+      }
+    }
+  }
+  inode_t inode;
+  fileSystem->stat(inode_num, &inode);
   response->setBody("");
 }
 
 void DistributedFileSystemService::del(HTTPRequest *request,
                                        HTTPResponse *response) {
-  string path = this->pathPrefix() + request->getPath();
-  if (path.find("..") != string::npos) {
-    response->setStatus(403);
-    return;
+  string path = request->getPath();
+  // Check that path starts with /ds3/
+  if (path.substr(0, 5) != pathPrefix()) {
+    throw ClientError::badRequest();
   }
+  // Remove /ds3
+  path.erase(0, 4);
+  if (path.find("..") != string::npos) {
+    throw ClientError::badRequest();
+    // response->setStatus(403);
+    // return;
+  }
+  // Find inode of last path segment
+  int inode_num = UFS_ROOT_DIRECTORY_INODE_NUMBER;
+  int parent_inode_num = inode_num;
+  string filename = "";
+  if (path.length() > 1) {
+    string segment = "";
+    for (auto iter = path.begin() + 1; iter != path.end(); iter++) {
+      if (*iter == '/') {
+        parent_inode_num = inode_num;
+        inode_num = fileSystem->lookup(inode_num, segment);
+        if (inode_num < 0) {
+          throw ClientError::notFound();
+        }
+        filename = segment;
+        segment = "";
+      } else {
+        segment += *iter;
+      }
+    }
+    // One more time for last path segment
+    if (segment.length()) {
+      parent_inode_num = inode_num;
+      inode_num = fileSystem->lookup(inode_num, segment);
+      if (inode_num < 0) {
+        throw ClientError::notFound();
+      }
+      filename = segment;
+    }
+  } else {
+    // Tried to delete root
+    throw ClientError::badRequest();
+  }
+  inode_t inode;
+  fileSystem->stat(inode_num, &inode);
+  // Delete
+  fileSystem->disk->beginTransaction();
+  if (fileSystem->unlink(parent_inode_num, filename) < 0) {
+    fileSystem->disk->rollback();
+    throw ClientError::badRequest();
+  }
+  fileSystem->disk->commit();
   response->setBody("");
 }
