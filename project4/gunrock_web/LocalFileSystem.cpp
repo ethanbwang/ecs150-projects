@@ -84,7 +84,7 @@ void __find_free_bit(const int &bitmap_size, unsigned char bitmap[],
                      int &free_bit_number, int &num_shifts, int &bitmap_byte) {
   for (int idx = 0; idx < bitmap_size; idx++) {
     if (bitmap[idx] != 0xff) {
-      free_bit_number = idx * sizeof(char) - 1;
+      free_bit_number = idx * 8;
       unsigned char tmp = bitmap[idx];
       // Shift until tmp's LSB is 0, each shift is one occupied inode
       while (tmp & 0x1) {
@@ -205,7 +205,6 @@ int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
 
   for (int idx = 0; idx < num_blocks; idx++) {
     // Read block
-    // disk->readBlock(super.data_region_addr + inode.direct[idx++], read_buf);
     disk->readBlock(inode.direct[idx++], read_buf);
     if (size > UFS_BLOCK_SIZE) {
       // Can copy the whole block
@@ -240,6 +239,10 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   // Make sure name is valid
   if (name.length() <= 0 || name.length() > 27) {
     return -EINVALIDNAME;
+  }
+  // Make sure type is valid
+  if (type != UFS_DIRECTORY && type != UFS_REGULAR_FILE) {
+    return -EINVALIDTYPE;
   }
   super_t super = super_t();
   readSuperBlock(&super);
@@ -284,7 +287,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   // Create new inode
   // 1. Find first free inode in bitmap
   int free_inode_number = -1;
-  int num_shifts = -1;
+  int num_shifts = 0;
   __find_free_bit(inode_bitmap_size, inode_bitmap, free_inode_number,
                   num_shifts, bitmap_byte);
   if (free_inode_number < 0) {
@@ -299,6 +302,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   unsigned char data_bitmap[data_bitmap_size];
   readDataBitmap(&super, data_bitmap);
   int free_data_number = -1;
+  num_shifts = 0;
   __find_free_bit(data_bitmap_size, data_bitmap, free_data_number, num_shifts,
                   bitmap_byte);
   if (free_data_number < 0) {
@@ -313,7 +317,8 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   inodes[free_inode_number].size =
       type == UFS_REGULAR_FILE ? 0 : 2 * sizeof(dir_ent_t);
   inodes[free_inode_number].type = type;
-  inodes[free_inode_number].direct[0] = free_data_number;
+  inodes[free_inode_number].direct[0] =
+      super.data_region_addr + free_data_number;
   writeInodeRegion(&super, inodes);
 
   // 4. Create directory entry in parent directory
@@ -322,6 +327,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   if (block_offset == 0) {
     // Allocate new data block for parent if possible
     int parent_block_number = -1;
+    num_shifts = 0;
     __find_free_bit(data_bitmap_size, data_bitmap, parent_block_number,
                     num_shifts, bitmap_byte);
     if (parent_block_number < 0) {
@@ -332,7 +338,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
     data_bitmap[bitmap_byte] |= 0x1 << num_shifts;
     // Update inode
     parent_inode.direct[parent_inode.size / UFS_BLOCK_SIZE + 1] =
-        parent_block_number;
+        super.data_region_addr + parent_block_number;
     parent_direct = parent_block_number;
   }
   // Update inode
@@ -428,17 +434,23 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
       __find_free_bit(data_bitmap_size, data_bitmap, free_block_num, num_shifts,
                       bitmap_byte);
       if (free_block_num < 0) {
-        // No more memory
-        disk->rollback();
-        return -EINVALIDSIZE;
+        break;
       }
       // Preallocate data block
       data_bitmap[bitmap_byte] |= 0b1 << num_shifts;
       // Add data block number to inode's direct pointer list
-      inode.direct[idx] = free_block_num;
+      inode.direct[idx] = super.data_region_addr + free_block_num;
+      num_blocks++;
     }
     // Write bitmap
     writeDataBitmap(&super, data_bitmap);
+    // Update inode size
+    // Handle case where there wasn't enough memory
+    inode.size = UFS_BLOCK_SIZE * num_blocks;
+    if (size < inode.size) {
+      // Able to allocate enough blocks
+      inode.size = size;
+    }
   } else if (num_req_blocks < num_blocks) {
     // Deallocate data blocks
     int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
@@ -447,8 +459,9 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     int num_shifts = 0;
     for (int idx = num_blocks - 1; idx >= num_req_blocks; idx--) {
       // Deallocate data block
-      bitmap_byte = inode.direct[idx] / 8;
-      num_shifts = inode.direct[idx] % 8;
+      int relative_block_num = inode.direct[idx] - super.data_region_addr;
+      bitmap_byte = relative_block_num / 8;
+      num_shifts = relative_block_num % 8;
       // TODO: Remove if block once done with assignment
       if (!(data_bitmap[bitmap_byte] & 0b1 << num_shifts)) {
         cerr << "Data bit is not set when it should be set" << endl;
@@ -458,14 +471,15 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     }
     // Write bitmap
     writeDataBitmap(&super, data_bitmap);
+    // Update inode size
+    inode.size = size;
+    num_blocks = num_req_blocks;
   }
-  // Update inode size
-  inode.size = size;
 
   // 2. Write to disk
   writeInodeRegion(&super, inodes);
   const char *buffer_p = static_cast<const char *>(buffer);
-  for (int idx = 0; idx < num_req_blocks; idx++) {
+  for (int idx = 0; idx < num_blocks; idx++) {
     const void *tmp = static_cast<const void *>(buffer_p);
     disk->writeBlock(inode.direct[idx], const_cast<void *>(tmp));
     buffer_p += UFS_BLOCK_SIZE;
@@ -533,8 +547,9 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
       }
       // Unset each data bit
       for (int idx = 0; idx < num_blocks; idx++) {
-        byte_offset = inode.direct[idx] % 8;
-        bitmap_byte = inode.direct[idx] / 8;
+        int relative_block_num = inode.direct[idx] - super.data_region_addr;
+        byte_offset = relative_block_num % 8;
+        bitmap_byte = relative_block_num / 8;
         data_bitmap[bitmap_byte] &= ~(0b1 << byte_offset);
       }
 
@@ -567,8 +582,10 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
       // Reduce parent size
       parent_inode.size -= sizeof(dir_ent_t);
       // If parent size now spans fewer blocks, unallocate last data block
-      byte_offset = parent_inode.direct[num_blocks - 1] % 8;
-      bitmap_byte = parent_inode.direct[num_blocks - 1] / 8;
+      int relative_block_num =
+          parent_inode.direct[num_blocks - 1] - super.data_region_addr;
+      byte_offset = relative_block_num % 8;
+      bitmap_byte = relative_block_num / 8;
       data_bitmap[bitmap_byte] &= ~(0b1 << byte_offset);
       num_blocks--;
 
