@@ -279,8 +279,9 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
       // Inode exists, check type
       if (inodes[buffer[idx].inum].type == type)
         return buffer[idx].inum;
-      else
+      else {
         return -EINVALIDTYPE;
+      }
     }
   }
   // Searched all entries without finding name
@@ -297,33 +298,36 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   // Pre-allocate inode
   inode_bitmap[bitmap_byte] |= 0x1 << num_shifts;
 
-  // 2. Find first free block in data region
+  // 2. Find first free block in data region if directory
   int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
   unsigned char data_bitmap[data_bitmap_size];
   readDataBitmap(&super, data_bitmap);
   int free_data_number = -1;
   num_shifts = 0;
-  __find_free_bit(data_bitmap_size, data_bitmap, free_data_number, num_shifts,
-                  bitmap_byte);
-  if (free_data_number < 0) {
-    // No free data block
-    return -ENOTENOUGHSPACE;
+  if (type == UFS_DIRECTORY) {
+    __find_free_bit(data_bitmap_size, data_bitmap, free_data_number, num_shifts,
+                    bitmap_byte);
+    if (free_data_number < 0) {
+      // No free data block
+      return -ENOTENOUGHSPACE;
+    }
+    // Preallocate data block
+    data_bitmap[bitmap_byte] |= 0x1 << num_shifts;
   }
-  // Preallocate data block
-  data_bitmap[bitmap_byte] |= 0x1 << num_shifts;
 
   // 3. Create inode
   inodes[free_inode_number] = inode_t();
   inodes[free_inode_number].size =
       type == UFS_REGULAR_FILE ? 0 : 2 * sizeof(dir_ent_t);
   inodes[free_inode_number].type = type;
-  inodes[free_inode_number].direct[0] =
-      super.data_region_addr + free_data_number;
-  writeInodeRegion(&super, inodes);
+  if (type == UFS_DIRECTORY) {
+    inodes[free_inode_number].direct[0] =
+        super.data_region_addr + free_data_number;
+  }
 
   // 4. Create directory entry in parent directory
   int parent_direct = parent_inode.direct[parent_inode.size / UFS_BLOCK_SIZE];
-  int block_offset = parent_inode.size % UFS_BLOCK_SIZE;
+  int block_offset = parent_inode.size % UFS_BLOCK_SIZE / sizeof(dir_ent_t);
   if (block_offset == 0) {
     // Allocate new data block for parent if possible
     int parent_block_number = -1;
@@ -339,17 +343,17 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
     // Update inode
     parent_inode.direct[parent_inode.size / UFS_BLOCK_SIZE + 1] =
         super.data_region_addr + parent_block_number;
-    parent_direct = parent_block_number;
+    parent_direct = super.data_region_addr + parent_block_number;
   }
   // Update inode
   parent_inode.size += sizeof(dir_ent_t);
   // Read directory data block
-  dir_ent_t parent_dir_ent_block[UFS_BLOCK_SIZE / sizeof(dir_ent_t)];
-  disk->readBlock(super.data_region_addr + parent_direct, parent_dir_ent_block);
+  dir_ent_t parent_dir_ent[UFS_BLOCK_SIZE / sizeof(dir_ent_t)];
+  disk->readBlock(parent_direct, parent_dir_ent);
   // Create new directory entry
-  parent_dir_ent_block[block_offset] = dir_ent_t();
-  parent_dir_ent_block[block_offset].inum = free_inode_number;
-  strcpy(parent_dir_ent_block[block_offset].name, name.c_str());
+  parent_dir_ent[block_offset] = dir_ent_t();
+  parent_dir_ent[block_offset].inum = free_inode_number;
+  strcpy(parent_dir_ent[block_offset].name, name.c_str());
 
   // 5. Create . and .. entries if type is directory
   // Begin transaction here since writeBlock may be called in conditional
@@ -372,8 +376,7 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   writeInodeBitmap(&super, inode_bitmap);
   writeInodeRegion(&super, inodes);
   writeDataBitmap(&super, data_bitmap);
-  disk->writeBlock(super.data_region_addr + parent_direct,
-                   parent_dir_ent_block);
+  disk->writeBlock(parent_direct, parent_dir_ent);
 
   // Commit
   // disk->commit();
@@ -479,10 +482,17 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   // 2. Write to disk
   writeInodeRegion(&super, inodes);
   const char *buffer_p = static_cast<const char *>(buffer);
-  for (int idx = 0; idx < num_blocks; idx++) {
+  for (int idx = 0; idx < num_blocks - 1; idx++) {
     const void *tmp = static_cast<const void *>(buffer_p);
     disk->writeBlock(inode.direct[idx], const_cast<void *>(tmp));
     buffer_p += UFS_BLOCK_SIZE;
+  }
+  // Last block isn't filled
+  if (size % UFS_BLOCK_SIZE) {
+    char tmp_buf[UFS_BLOCK_SIZE];
+    int offset = (num_blocks - 1) * UFS_BLOCK_SIZE;
+    memcpy(tmp_buf, buffer_p, size - offset);
+    disk->writeBlock(inode.direct[num_blocks - 1], tmp_buf);
   }
 
   // disk->commit();

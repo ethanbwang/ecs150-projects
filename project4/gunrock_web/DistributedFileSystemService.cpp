@@ -100,6 +100,7 @@ void DistributedFileSystemService::get(HTTPRequest *request,
     }
     // Set response body
     response->setBody(string(buffer, inode.size));
+    response->setContentType("text/plain");
   }
 }
 
@@ -119,13 +120,39 @@ void DistributedFileSystemService::put(HTTPRequest *request,
   }
   // Find inode of last path segment
   int inode_num = UFS_ROOT_DIRECTORY_INODE_NUMBER;
+  int parent_inode_num = inode_num;
+  inode_t inode;
+  fileSystem->disk->beginTransaction();
   if (path.length() > 1) {
     string segment = "";
     for (auto iter = path.begin() + 1; iter != path.end(); iter++) {
       if (*iter == '/') {
+        parent_inode_num = inode_num;
         inode_num = fileSystem->lookup(inode_num, segment);
-        if (inode_num < 0) {
+        if (inode_num == -EINVALIDINODE) {
+          fileSystem->disk->rollback();
           throw ClientError::notFound();
+        } else if (inode_num == -ENOTFOUND) {
+          // Create directory
+          inode_num =
+              fileSystem->create(parent_inode_num, UFS_DIRECTORY, segment);
+          if (inode_num == -ENOTENOUGHSPACE) {
+            fileSystem->disk->rollback();
+            throw ClientError::insufficientStorage();
+          } else if (inode_num < 0) {
+            fileSystem->disk->rollback();
+            throw ClientError::badRequest();
+          }
+        } else {
+          // Check for conflict
+          if (fileSystem->stat(inode_num, &inode) < 0) {
+            fileSystem->disk->rollback();
+            throw ClientError::badRequest();
+          }
+          if (inode.type == UFS_REGULAR_FILE) {
+            fileSystem->disk->rollback();
+            throw ClientError::conflict();
+          }
         }
         segment = "";
       } else {
@@ -133,15 +160,56 @@ void DistributedFileSystemService::put(HTTPRequest *request,
       }
     }
     // One more time for last path segment
+    // New files must pass through this logic
     if (segment.length()) {
+      parent_inode_num = inode_num;
       inode_num = fileSystem->lookup(inode_num, segment);
-      if (inode_num < 0) {
+      if (inode_num == -EINVALIDINODE) {
+        fileSystem->disk->rollback();
         throw ClientError::notFound();
+      } else if (inode_num == -ENOTFOUND) {
+        // Create new file
+        inode_num =
+            fileSystem->create(parent_inode_num, UFS_REGULAR_FILE, segment);
+        if (inode_num == -ENOTENOUGHSPACE) {
+          fileSystem->disk->rollback();
+          throw ClientError::insufficientStorage();
+        } else if (inode_num < 0) {
+          fileSystem->disk->rollback();
+          throw ClientError::badRequest();
+        }
+      } else {
+        // Check if it's a directory
+        if (fileSystem->stat(inode_num, &inode) < 0) {
+          fileSystem->disk->rollback();
+          throw ClientError::badRequest();
+        }
+        if (inode.type == UFS_DIRECTORY) {
+          fileSystem->disk->rollback();
+          throw ClientError::conflict();
+        }
+        // Overwrite is done below
       }
     }
+  } else {
+    // Tried to create root directory
+    fileSystem->disk->rollback();
+    throw ClientError::conflict();
   }
-  inode_t inode;
-  fileSystem->stat(inode_num, &inode);
+
+  string body = request->getBody();
+  if (path[path.length() - 1] != '/') {
+    // Write to file
+    if (fileSystem->write(inode_num, body.c_str(), body.length()) < 0) {
+      fileSystem->disk->rollback();
+      throw ClientError::badRequest();
+    }
+  } else if (body.length()) {
+    // Payload should be empty if creating a directory
+    fileSystem->disk->rollback();
+    throw ClientError::badRequest();
+  }
+  fileSystem->disk->commit();
   response->setBody("");
 }
 
@@ -191,8 +259,6 @@ void DistributedFileSystemService::del(HTTPRequest *request,
     // Tried to delete root
     throw ClientError::badRequest();
   }
-  inode_t inode;
-  fileSystem->stat(inode_num, &inode);
   // Delete
   fileSystem->disk->beginTransaction();
   if (fileSystem->unlink(parent_inode_num, filename) < 0) {
