@@ -17,7 +17,8 @@ using namespace std;
 Disk::Disk(string imageFile, int blockSize) {
   this->imageFile = imageFile;
   this->blockSize = blockSize;
-
+  this->isInTransaction = false;
+  
   struct stat stat;
   int imageFileDescriptor = open(imageFile.c_str(), O_RDONLY);
   if (imageFileDescriptor < 0) {
@@ -48,7 +49,7 @@ int Disk::numberOfBlocks() {
 }
 
 void Disk::readBlock(int blockNumber, void *buffer) {
-  if (blockNumber < 0 || blockNumber > this->numberOfBlocks()) {
+  if (blockNumber < 0 || blockNumber >= this->numberOfBlocks()) {
     cerr << "Invalid block number " << blockNumber << endl;
     exit(1);
   }
@@ -77,7 +78,7 @@ void Disk::readBlock(int blockNumber, void *buffer) {
 }
 
 void Disk::writeBlock(int blockNumber, void *buffer) {  
-  if (blockNumber < 0 || blockNumber > this->numberOfBlocks()) {
+  if (blockNumber < 0 || blockNumber >= this->numberOfBlocks()) {
     cerr << "Invalid block number " << blockNumber << endl;
     exit(1);
   }
