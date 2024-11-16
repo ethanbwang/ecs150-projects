@@ -204,7 +204,7 @@ int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
 
   for (int idx = 0; idx < num_blocks; idx++) {
     // Read block
-    disk->readBlock(inode.direct[idx++], read_buf);
+    disk->readBlock(inode.direct[idx], read_buf);
     if (size > UFS_BLOCK_SIZE) {
       // Can copy the whole block
       memcpy(buf_offset, read_buf, UFS_BLOCK_SIZE);
@@ -404,7 +404,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     return -EINVALIDINODE;
   }
 
-  // Check if parent inode is a directory inode
+  // Check if inode is a directory inode
   inode_t inodes[super.inode_region_len * UFS_BLOCK_SIZE / sizeof(inode_t)];
   readInodeRegion(&super, inodes);
   inode_t &inode = inodes[inodeNumber];
@@ -433,6 +433,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     int free_block_num = -1;
     int num_shifts = 0;
     for (int idx = num_blocks; idx < num_req_blocks; idx++) {
+      num_shifts = 0;
       __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
                       free_block_num, num_shifts, bitmap_byte);
       if (free_block_num < 0) {
@@ -464,11 +465,6 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
       int relative_block_num = inode.direct[idx] - super.data_region_addr;
       bitmap_byte = relative_block_num / 8;
       num_shifts = relative_block_num % 8;
-      // TODO: Remove if block once done with assignment
-      if (!(data_bitmap[bitmap_byte] & 0b1 << num_shifts)) {
-        cerr << "Data bit is not set when it should be set" << endl;
-        return -EINVALIDINODE;
-      }
       data_bitmap[bitmap_byte] &= ~(0b1 << num_shifts);
     }
     // Write bitmap
@@ -476,23 +472,24 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     // Update inode size
     inode.size = size;
     num_blocks = num_req_blocks;
+  } else {
+    // Enough blocks
+    inode.size = size;
   }
 
   // 2. Write to disk
   writeInodeRegion(&super, inodes);
   const char *buffer_p = static_cast<const char *>(buffer);
   for (int idx = 0; idx < num_blocks - 1; idx++) {
-    const void *tmp = static_cast<const void *>(buffer_p);
-    disk->writeBlock(inode.direct[idx], const_cast<void *>(tmp));
+    disk->writeBlock(inode.direct[idx], const_cast<char *>(buffer_p));
     buffer_p += UFS_BLOCK_SIZE;
+    bytes_written += UFS_BLOCK_SIZE;
   }
-  // Last block isn't filled
-  if (size % UFS_BLOCK_SIZE) {
-    char tmp_buf[UFS_BLOCK_SIZE];
-    int offset = (num_blocks - 1) * UFS_BLOCK_SIZE;
-    memcpy(tmp_buf, buffer_p, size - offset);
-    disk->writeBlock(inode.direct[num_blocks - 1], tmp_buf);
-  }
+  // If last block isn't filled, need to avoid accessing bad memory
+  char tmp_buf[UFS_BLOCK_SIZE];
+  memcpy(tmp_buf, buffer_p, inode.size - bytes_written);
+  disk->writeBlock(inode.direct[num_blocks - 1], tmp_buf);
+  bytes_written = inode.size;
 
   // disk->commit();
   return bytes_written;

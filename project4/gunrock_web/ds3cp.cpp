@@ -30,27 +30,20 @@ int main(int argc, char *argv[]) {
   string srcFile = string(argv[2]);
   int dstInode = stoi(argv[3]);
 
+  // Open local file
   int local_fp = open(srcFile.c_str(), O_RDONLY);
   if (local_fp < 0) {
     cerr << "Failed to open file" << endl;
     return 1;
   }
 
-  char r_buf[4096];
-  string w_buf = "";
+  // Read local file into write buffer
+  char r_buf[UFS_BLOCK_SIZE];
+  string w_buf;
   int bytes_read = 0;
   while ((bytes_read = read(local_fp, r_buf, sizeof(r_buf))) > 0) {
-    w_buf += r_buf;
+    w_buf.append(r_buf, bytes_read);
   }
-
-  disk->beginTransaction();
-  if (static_cast<unsigned int>(fileSystem->write(
-          dstInode, w_buf.c_str(), w_buf.length())) != w_buf.length()) {
-    disk->rollback();
-    cerr << "Could not write to dst_file" << endl;
-    return 1;
-  }
-  disk->commit();
 
   close(local_fp);
 
@@ -58,6 +51,15 @@ int main(int argc, char *argv[]) {
     cerr << "Read error" << endl;
     return 1;
   }
+
+  // Write write buffer to destination inode
+  disk->beginTransaction();
+  if (fileSystem->write(dstInode, w_buf.c_str(), w_buf.length()) < 0) {
+    disk->rollback();
+    cerr << "Could not write to dst_file" << endl;
+    return 1;
+  }
+  disk->commit();
 
   return 0;
 }
