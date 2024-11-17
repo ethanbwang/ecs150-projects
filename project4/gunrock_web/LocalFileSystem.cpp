@@ -100,7 +100,7 @@ void __find_free_bit(const int &bitmap_size, const int &num_entries,
 
 int LocalFileSystem::lookup(int parentInodeNumber, string name) {
   // Make sure name is valid
-  if (name.length() <= 0 || name.length() > 27) {
+  if (name.length() <= 0 || name.length() >= DIR_ENT_NAME_SIZE) {
     return -ENOTFOUND;
   }
   // Assume 0-based inode indexing
@@ -236,7 +236,7 @@ int LocalFileSystem::read(int inodeNumber, void *buffer, int size) {
 int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   // Assume 0-based inode indexing
   // Make sure name is valid
-  if (name.length() <= 0 || name.length() > 27) {
+  if (name.length() <= 0 || name.length() >= DIR_ENT_NAME_SIZE) {
     return -EINVALIDNAME;
   }
   // Make sure type is valid
@@ -337,16 +337,16 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
     num_shifts = 0;
     __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
                     parent_block_number, num_shifts, bitmap_byte);
-    if (parent_block_number < 0 || num_parent_blocks >= DIRECT_PTRS) {
+    if (parent_block_number < 0 ||
+        parent_inode.size + sizeof(dir_ent_t) > MAX_FILE_SIZE) {
       // No free data block for parent
       return -ENOTENOUGHSPACE;
     }
     // Allocate data block
     data_bitmap[bitmap_byte] |= 0x1 << num_shifts;
     // Update inode
-    parent_inode.direct[num_parent_blocks] =
-        super.data_region_addr + parent_block_number;
     parent_direct = super.data_region_addr + parent_block_number;
+    parent_inode.direct[num_parent_blocks] = parent_direct;
   }
   // Update inode
   parent_inode.size += sizeof(dir_ent_t);
@@ -423,13 +423,14 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   if (inode.size % UFS_BLOCK_SIZE) {
     num_blocks++;
   }
-  int num_req_blocks = size / UFS_BLOCK_SIZE;
-  if (size % UFS_BLOCK_SIZE) {
-    num_req_blocks++;
-  }
-  if (num_req_blocks > DIRECT_PTRS) {
-    // Max of DIRECT_PTRS blocks
+  int num_req_blocks;
+  if (size > MAX_FILE_SIZE) {
     num_req_blocks = DIRECT_PTRS;
+  } else {
+    num_req_blocks = size / UFS_BLOCK_SIZE;
+    if (size % UFS_BLOCK_SIZE) {
+      num_req_blocks++;
+    }
   }
   // Allocate/deallocate data blocks if necessary
   // disk->beginTransaction();
@@ -438,9 +439,10 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
     int data_bitmap_size = super.data_bitmap_len * UFS_BLOCK_SIZE;
     unsigned char data_bitmap[data_bitmap_size];
     readDataBitmap(&super, data_bitmap);
-    int free_block_num = -1;
-    int num_shifts = 0;
+    int free_block_num;
+    int num_shifts;
     for (int idx = num_blocks; idx < num_req_blocks; idx++) {
+      free_block_num = -1;
       num_shifts = 0;
       __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
                       free_block_num, num_shifts, bitmap_byte);
@@ -505,7 +507,7 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
 
 int LocalFileSystem::unlink(int parentInodeNumber, string name) {
   // Make sure name is valid
-  if (name.length() <= 0 || name.length() > 27) {
+  if (name.length() <= 0 || name.length() >= DIR_ENT_NAME_SIZE) {
     return -EINVALIDNAME;
   }
   if (name == "." || name == "..") {
