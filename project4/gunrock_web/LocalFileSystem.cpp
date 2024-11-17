@@ -325,7 +325,11 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
   }
 
   // 4. Create directory entry in parent directory
-  int parent_direct = parent_inode.direct[parent_inode.size / UFS_BLOCK_SIZE];
+  int num_parent_blocks = parent_inode.size / UFS_BLOCK_SIZE;
+  if (parent_inode.size % UFS_BLOCK_SIZE) {
+    num_parent_blocks++;
+  }
+  int parent_direct = parent_inode.direct[num_parent_blocks - 1];
   int block_offset = parent_inode.size % UFS_BLOCK_SIZE / sizeof(dir_ent_t);
   if (block_offset == 0) {
     // Allocate new data block for parent if possible
@@ -333,14 +337,14 @@ int LocalFileSystem::create(int parentInodeNumber, int type, string name) {
     num_shifts = 0;
     __find_free_bit(data_bitmap_size, super.num_data, data_bitmap,
                     parent_block_number, num_shifts, bitmap_byte);
-    if (parent_block_number < 0) {
+    if (parent_block_number < 0 || num_parent_blocks >= DIRECT_PTRS) {
       // No free data block for parent
       return -ENOTENOUGHSPACE;
     }
     // Allocate data block
     data_bitmap[bitmap_byte] |= 0x1 << num_shifts;
     // Update inode
-    parent_inode.direct[parent_inode.size / UFS_BLOCK_SIZE + 1] =
+    parent_inode.direct[num_parent_blocks] =
         super.data_region_addr + parent_block_number;
     parent_direct = super.data_region_addr + parent_block_number;
   }
@@ -422,6 +426,10 @@ int LocalFileSystem::write(int inodeNumber, const void *buffer, int size) {
   int num_req_blocks = size / UFS_BLOCK_SIZE;
   if (size % UFS_BLOCK_SIZE) {
     num_req_blocks++;
+  }
+  if (num_req_blocks > DIRECT_PTRS) {
+    // Max of DIRECT_PTRS blocks
+    num_req_blocks = DIRECT_PTRS;
   }
   // Allocate/deallocate data blocks if necessary
   // disk->beginTransaction();
@@ -537,7 +545,7 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
     num_parent_blocks++;
   }
   int dir_ent_bytes = num_parent_blocks * UFS_BLOCK_SIZE;
-  dir_ent_t dir_ents[dir_ent_bytes];
+  dir_ent_t dir_ents[dir_ent_bytes / sizeof(dir_ent_t)];
   read(parentInodeNumber, dir_ents, dir_ent_bytes);
   for (int idx = 0; idx < num_ents; idx++) {
     if (dir_ents[idx].name == name) {
@@ -571,7 +579,6 @@ int LocalFileSystem::unlink(int parentInodeNumber, string name) {
 
       // 4. Remove directory entry from parent and reduce parent size by
       // sizeof(dir_ent_t)
-      // Find directory entry and replace with last directory entry
       if (num_ents - 1 != idx) {
         // Replace with last entry to avoid shifting all entries forward
         dir_ents[idx] = dir_ents[num_ents - 1];
