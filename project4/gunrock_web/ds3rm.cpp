@@ -26,7 +26,7 @@ int main(int argc, char *argv[]) {
   disk->beginTransaction();
   if (fileSystem->unlink(parentInode, entryName) < 0) {
     disk->rollback();
-    cerr << "Could not remove file or directory" << endl;
+    cerr << "Error removing entry" << endl;
     return 1;
   }
   disk->commit();
